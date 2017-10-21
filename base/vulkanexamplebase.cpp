@@ -1967,6 +1967,12 @@ void VulkanExampleBase::setupDepthStencil()
 
 void VulkanExampleBase::setupFrameBuffer()
 {
+	bool handled = false;
+	OnSetupFrameBuffer(handled);
+	if (handled) {
+		return;
+	}
+
 	VkImageView attachments[2];
 
 	// Depth/Stencil attachment is the same for all frame buffers
@@ -1993,6 +1999,12 @@ void VulkanExampleBase::setupFrameBuffer()
 
 void VulkanExampleBase::setupRenderPass()
 {
+	bool handled = false;
+	OnSetupRenderPass(handled);
+	if (handled) {
+		return;
+	}
+
 	std::array<VkAttachmentDescription, 2> attachments = {};
 	// Color attachment
 	attachments[0].format = swapChain.colorFormat;
@@ -2137,9 +2149,11 @@ void VulkanExampleBase::setupSwapChain()
 	swapChain.create(&width, &height, settings.vsync);
 }
 
+void VulkanExampleBase::OnSetupRenderPass(bool & handled) { handled = false; }
+void VulkanExampleBase::OnSetupFrameBuffer(bool &handled) { handled = false; }
 void VulkanExampleBase::OnGetEnabledFeatures() {}
 void VulkanExampleBase::OnGetOverlayText(VulkanTextOverlay*) {}
-void VulkanExampleBase::OnMouseMoved(double x, double y, bool & handled) {}
+void VulkanExampleBase::OnMouseMoved(double x, double y, bool &handled) { handled = false; }
 void VulkanExampleBase::OnKeyPressed(uint32_t keyCode) {};
 void VulkanExampleBase::OnViewChanged() {}
 void VulkanExampleBase::OnWindowResized() {}

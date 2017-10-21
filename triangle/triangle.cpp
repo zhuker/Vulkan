@@ -666,9 +666,11 @@ public:
 	}
 
 	// Create a frame buffer for each swap chain image
-	// Note: Override of virtual function in the base class and called from within VulkanExampleBase::prepare
-	void setupFrameBuffer()
+	void OnSetupFrameBuffer(bool &handled)
 	{
+		// Override of virtual function in the base class, setting handled = true skips default base class render pass setup
+		handled = true;
+
 		// Create a frame buffer for every image in the swapchain
 		frameBuffers.resize(swapChain.imageCount);
 		for (size_t i = 0; i < frameBuffers.size(); i++)
@@ -695,9 +697,11 @@ public:
 	// Render passes are a new concept in Vulkan. They describe the attachments used during rendering and may contain multiple subpasses with attachment dependencies 
 	// This allows the driver to know up-front what the rendering will look like and is a good opportunity to optimize especially on tile-based renderers (with multiple subpasses)
 	// Using sub pass dependencies also adds implicit layout transitions for the attachment used, so we don't need to add explicit image memory barriers to transform them
-	// Note: Override of virtual function in the base class and called from within VulkanExampleBase::prepare
-	void setupRenderPass()
+	void OnSetupRenderPass(bool &handled)
 	{
+		// Override of virtual function in the base class, setting handled = true skips default base class render pass setup
+		handled = true;
+
 		// This example will use a single render pass with one subpass
 
 		// Descriptors for the attachments used by this renderpass
@@ -1088,7 +1092,7 @@ public:
 		draw();
 	}
 
-	virtual void viewChanged()
+	virtual void OnViewChanged()
 	{
 		// This function is called by the base example class each time the view is changed by user input
 		updateUniformBuffers();

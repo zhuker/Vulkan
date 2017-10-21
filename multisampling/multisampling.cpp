@@ -43,7 +43,7 @@ class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool useSampleShading = false;
-    VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
+	VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
 
 	struct {
 		vks::Texture2D colorMap;
@@ -222,9 +222,10 @@ public:
 	// Setup a render pass for using a multi sampled attachment 
 	// and a resolve attachment that the msaa image is resolved 
 	// to at the end of the render pass
-	void setupRenderPass()
+	void OnSetupRenderPass(bool &handled)
 	{
 		// Overrides the virtual function of the base class
+		handled = true;
 
 		std::array<VkAttachmentDescription, 4> attachments = {};
 
@@ -323,9 +324,10 @@ public:
 	// Frame buffer attachments must match with render pass setup, 
 	// so we need to adjust frame buffer creation to cover our 
 	// multisample target
-	void setupFrameBuffer()
+	void OnSetupFrameBuffer(bool &handled)
 	{
 		// Overrides the virtual function of the base class
+		handled = true;
 
 		std::array<VkImageView, 4> attachments;
 
@@ -693,7 +695,7 @@ public:
 
 	void prepare()
 	{
-        sampleCount = getMaxUsableSampleCount();
+		sampleCount = getMaxUsableSampleCount();
 		VulkanExampleBase::prepare();
 		loadAssets();
 		setupVertexDescriptions();
@@ -713,18 +715,18 @@ public:
 		draw();
 	}
 
-	virtual void viewChanged()
-	{
-		updateUniformBuffers();
-	}
-
 	void toggleSampleShading()
 	{
 		useSampleShading = !useSampleShading;
 		reBuildCommandBuffers();
 	}
 
-	virtual void keyPressed(uint32_t keyCode)
+	virtual void OnViewChanged()
+	{
+		updateUniformBuffers();
+	}
+
+	virtual void OnKeyPressed(uint32_t keyCode)
 	{
 		switch (keyCode)
 		{
@@ -735,20 +737,20 @@ public:
 		}
 	}
 
-    // Returns the maximum sample count usable by the platform
-    VkSampleCountFlagBits getMaxUsableSampleCount()
-    {
-        VkSampleCountFlags counts = std::min(deviceProperties.limits.framebufferColorSampleCounts,
-                                            deviceProperties.limits.framebufferDepthSampleCounts);
+	// Returns the maximum sample count usable by the platform
+	VkSampleCountFlagBits getMaxUsableSampleCount()
+	{
+		VkSampleCountFlags counts = std::min(deviceProperties.limits.framebufferColorSampleCounts,
+											deviceProperties.limits.framebufferDepthSampleCounts);
 
-        if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
-        if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
-        if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
-        if (counts & VK_SAMPLE_COUNT_8_BIT) { return VK_SAMPLE_COUNT_8_BIT; }
-        if (counts & VK_SAMPLE_COUNT_4_BIT) { return VK_SAMPLE_COUNT_4_BIT; }
-        if (counts & VK_SAMPLE_COUNT_2_BIT) { return VK_SAMPLE_COUNT_2_BIT; }
-        return VK_SAMPLE_COUNT_1_BIT;
-    }
+		if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
+		if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
+		if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
+		if (counts & VK_SAMPLE_COUNT_8_BIT) { return VK_SAMPLE_COUNT_8_BIT; }
+		if (counts & VK_SAMPLE_COUNT_4_BIT) { return VK_SAMPLE_COUNT_4_BIT; }
+		if (counts & VK_SAMPLE_COUNT_2_BIT) { return VK_SAMPLE_COUNT_2_BIT; }
+		return VK_SAMPLE_COUNT_1_BIT;
+	}
 
 };
 

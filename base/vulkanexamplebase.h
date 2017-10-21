@@ -68,6 +68,10 @@ private:
 	vks::Benchmark benchmark;
 	// Called if the window is resized and some resources have to be recreatesd
 	void windowResize();
+	// Create framebuffers for all requested swap chain images
+	void setupFrameBuffer();
+	// Setup a default render pass
+	void setupRenderPass();
 protected:
 	// Frame counter to display fps
 	uint32_t frameCounter = 0;
@@ -325,12 +329,6 @@ public:
 	void createCommandPool();
 	// Setup default depth and stencil views
 	virtual void setupDepthStencil();
-	// Create framebuffers for all requested swap chain images
-	// Can be overriden in derived class to setup a custom framebuffer (e.g. for MSAA)
-	virtual void setupFrameBuffer();
-	// Setup a default render pass
-	// Can be overriden in derived class to setup a custom render pass (e.g. for MSAA)
-	virtual void setupRenderPass();
 
 	// Connect and prepare the swap chain
 	void initSwapchain();
@@ -369,7 +367,6 @@ public:
 
 	void updateTextOverlay();
 
-
 	// Prepare the frame for workload submission
 	// - Acquires the next image from the swap chain 
 	// - Sets the default wait and signal semaphores
@@ -380,6 +377,11 @@ public:
 	void submitFrame();
 
 	/** Virtual event functions called from the base class */
+
+	/** @brief (Virtual) Can be used to override the default render pass setup */
+	virtual void OnSetupRenderPass(bool &handled);
+	/** @brief (Virtual) Can be used to override the default frame buffer setup */
+	virtual void OnSetupFrameBuffer(bool &handled);
 	/** @brief (Virtual) Called after the physical device features have been read, can be used to set features to enable on the device */
 	virtual void OnGetEnabledFeatures();
 	/** @brief (Virtual) Called when the text overlay is updating, can be used to add custom text to the overlay */
@@ -392,8 +394,6 @@ public:
 	virtual void OnViewChanged();
 	/** @brief (Virtual) Called when the window has been resized, use to recreate or rebuild resources attached to the frame buffer / swapchain */
 	virtual void OnWindowResized();
-
-
 };
 
 // OS specific macros for the example main entry points

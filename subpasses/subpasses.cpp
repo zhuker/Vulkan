@@ -247,8 +247,10 @@ public:
 
 	// Override framebuffer setup from base class
 	// Deferred components will be used as frame buffer attachments
-	void setupFrameBuffer()
+	void OnSetupFrameBuffer(bool &handled)
 	{
+		handled = true;
+
 		VkImageView attachments[5];
 
 		VkFramebufferCreateInfo frameBufferCreateInfo = {};
@@ -275,8 +277,10 @@ public:
 	}
 
 	// Override render pass setup from base class
-	void setupRenderPass()
+	void OnSetupRenderPass(bool &handled)
 	{
+		handled = true;
+
 		createGBufferAttachments(); 
 
 		std::array<VkAttachmentDescription, 5> attachments{};
@@ -1036,13 +1040,13 @@ public:
 		draw();
 	}
 
-	virtual void viewChanged()
+	virtual void OnViewChanged()
 	{
 		updateUniformBufferDeferredMatrices();
 		updateUniformBufferDeferredLights();
 	}
 
-	virtual void keyPressed(uint32_t keyCode)
+	virtual void OnKeyPressed(uint32_t keyCode)
 	{
 		switch (keyCode)
 		{
