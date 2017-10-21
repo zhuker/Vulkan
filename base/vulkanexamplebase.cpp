@@ -227,10 +227,9 @@ VkPipelineShaderStageCreateInfo VulkanExampleBase::loadShader(std::string fileNa
 void VulkanExampleBase::renderFrame()
 {
 	auto tStart = std::chrono::high_resolution_clock::now();
-	if (viewUpdated)
-	{
+	if (viewUpdated) {
 		viewUpdated = false;
-		viewChanged();
+		OnViewChanged();
 	}
 
 	render();
@@ -564,12 +563,10 @@ void VulkanExampleBase::updateTextOverlay()
 #endif
 	textOverlay->addText(deviceName, 5.0f, 45.0f, VulkanTextOverlay::alignLeft);
 
-	getOverlayText(textOverlay);
+	OnGetOverlayText(textOverlay);
 
 	textOverlay->endTextUpdate();
 }
-
-void VulkanExampleBase::getOverlayText(VulkanTextOverlay*) {}
 
 void VulkanExampleBase::prepareFrame()
 {
@@ -868,7 +865,7 @@ void VulkanExampleBase::initVulkan()
 	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &deviceMemoryProperties);
 
 	// Derived examples can override this to set actual features (based on above readings) to enable for logical device creation
-	getEnabledFeatures();
+	OnGetEnabledFeatures();
 
 	// Vulkan device creation
 	// This is handled by a separate class that gets a logical device representation
@@ -1103,7 +1100,7 @@ void VulkanExampleBase::handleMessages(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 			}
 		}
 
-		keyPressed((uint32_t)wParam);
+		OnKeyPressed((uint32_t)wParam);
 		break;
 	case WM_KEYUP:
 		if (camera.firstperson)
@@ -1159,7 +1156,7 @@ void VulkanExampleBase::handleMessages(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 		bool handled = false;
 		int32_t posx = LOWORD(lParam);
 		int32_t posy = HIWORD(lParam);
-		mouseMoved((float)posx, (float)posy, handled);
+		OnMouseMoved((float)posx, (float)posy, handled);
 		if (handled) {
 			mousePos = glm::vec2((float)posx, (float)posy);
 			break;
@@ -1910,12 +1907,6 @@ void VulkanExampleBase::handleEvent(const xcb_generic_event_t *event)
 }
 #endif
 
-void VulkanExampleBase::viewChanged() {}
-
-void VulkanExampleBase::keyPressed(uint32_t) {}
-
-void VulkanExampleBase::mouseMoved(double x, double y, bool & handled) {}
-
 void VulkanExampleBase::buildCommandBuffers() {}
 
 void VulkanExampleBase::createCommandPool()
@@ -2072,11 +2063,6 @@ void VulkanExampleBase::setupRenderPass()
 	VK_CHECK_RESULT(vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass));
 }
 
-void VulkanExampleBase::getEnabledFeatures()
-{
-	// Can be overriden in derived class
-}
-
 void VulkanExampleBase::windowResize()
 {
 	if (!prepared)
@@ -2123,15 +2109,10 @@ void VulkanExampleBase::windowResize()
 	camera.updateAspectRatio((float)width / (float)height);
 
 	// Notify derived class
-	windowResized();
-	viewChanged();
+	OnWindowResized();
+	OnViewChanged();
 
 	prepared = true;
-}
-
-void VulkanExampleBase::windowResized()
-{
-	// Can be overriden in derived class
 }
 
 void VulkanExampleBase::initSwapchain()
@@ -2155,3 +2136,10 @@ void VulkanExampleBase::setupSwapChain()
 {
 	swapChain.create(&width, &height, settings.vsync);
 }
+
+void VulkanExampleBase::OnGetEnabledFeatures() {}
+void VulkanExampleBase::OnGetOverlayText(VulkanTextOverlay*) {}
+void VulkanExampleBase::OnMouseMoved(double x, double y, bool & handled) {}
+void VulkanExampleBase::OnKeyPressed(uint32_t keyCode) {};
+void VulkanExampleBase::OnViewChanged() {}
+void VulkanExampleBase::OnWindowResized() {}

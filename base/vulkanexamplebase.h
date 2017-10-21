@@ -316,17 +316,6 @@ public:
 
 	// Pure virtual render function (override in derived class)
 	virtual void render() = 0;
-	// Called when view change occurs
-	// Can be overriden in derived class to e.g. update uniform buffers 
-	// Containing view dependant matrices
-	virtual void viewChanged();
-	/** @brief (Virtual) Called after a key was pressed, can be used to do custom key handling */
-	virtual void keyPressed(uint32_t);
-	/** @brief (Virtual) Called after th mouse cursor moved and before internal events (like camera rotation) is handled */
-	virtual void mouseMoved(double x, double y, bool &handled);
-	// Called when the window has been resized
-	// Can be overriden in derived class to recreate or rebuild resources attached to the frame buffer / swapchain
-	virtual void windowResized();
 	// Pure virtual function to be overriden by the dervice class
 	// Called in case of an event where e.g. the framebuffer has to be rebuild and thus
 	// all command buffers that may reference this
@@ -342,9 +331,6 @@ public:
 	// Setup a default render pass
 	// Can be overriden in derived class to setup a custom render pass (e.g. for MSAA)
 	virtual void setupRenderPass();
-
-	/** @brief (Virtual) Called after the physical device features have been read, can be used to set features to enable on the device */
-	virtual void getEnabledFeatures();
 
 	// Connect and prepare the swap chain
 	void initSwapchain();
@@ -383,8 +369,6 @@ public:
 
 	void updateTextOverlay();
 
-	/** @brief (Virtual) Called when the text overlay is updating, can be used to add custom text to the overlay */
-	virtual void getOverlayText(VulkanTextOverlay*);
 
 	// Prepare the frame for workload submission
 	// - Acquires the next image from the swap chain 
@@ -394,6 +378,21 @@ public:
 	// Submit the frames' workload 
 	// - Submits the text overlay (if enabled)
 	void submitFrame();
+
+	/** Virtual event functions called from the base class */
+	/** @brief (Virtual) Called after the physical device features have been read, can be used to set features to enable on the device */
+	virtual void OnGetEnabledFeatures();
+	/** @brief (Virtual) Called when the text overlay is updating, can be used to add custom text to the overlay */
+	virtual void OnGetOverlayText(VulkanTextOverlay*);
+	/** @brief (Virtual) Called after th mouse cursor moved and before internal events (like camera rotation) is handled */
+	virtual void OnMouseMoved(double x, double y, bool &handled);
+	/** @brief (Virtual) Called after a key was pressed, can be used to do custom key handling */
+	virtual void OnKeyPressed(uint32_t keyCode);
+	/** @brief (Virtual) Called when a view change occurs and matrices or ubos need to be updated */
+	virtual void OnViewChanged();
+	/** @brief (Virtual) Called when the window has been resized, use to recreate or rebuild resources attached to the frame buffer / swapchain */
+	virtual void OnWindowResized();
+
 
 };
 
