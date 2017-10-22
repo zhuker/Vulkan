@@ -359,7 +359,7 @@ void VulkanExampleBase::renderLoop()
 			}
 			if (touchTimer >= 1.0) {
 				camera.keys.up = true;
-				viewChanged();
+				OnViewChanged();
 			}
 
 			// Check gamepad state
@@ -389,7 +389,7 @@ void VulkanExampleBase::renderLoop()
 				}
 				if (updateView)
 				{
-					viewChanged();
+					OnViewChanged();
 				}
 			}
 			else
@@ -397,7 +397,7 @@ void VulkanExampleBase::renderLoop()
 				updateView = camera.updatePad(gamePadState.axisLeft, gamePadState.axisRight, frameTimer);
 				if (updateView)
 				{
-					viewChanged();
+					OnViewChanged();
 				}
 			}
 		}
@@ -409,7 +409,7 @@ void VulkanExampleBase::renderLoop()
 		if (viewUpdated)
 		{
 			viewUpdated = false;
-			viewChanged();
+			OnViewChanged();
 		}
 		render();
 		frameCounter++;
@@ -446,7 +446,7 @@ void VulkanExampleBase::renderLoop()
 		if (viewUpdated)
 		{
 			viewUpdated = false;
-			viewChanged();
+			OnViewChanged();
 		}
 
 		while (wl_display_prepare_read(display) != 0)
@@ -496,7 +496,7 @@ void VulkanExampleBase::renderLoop()
 		if (viewUpdated)
 		{
 			viewUpdated = false;
-			viewChanged();
+			OnViewChanged();
 		}
 		xcb_generic_event_t *event;
 		while ((event = xcb_poll_for_event(connection)))
@@ -1242,7 +1242,7 @@ int32_t VulkanExampleBase::handleAppInput(struct android_app* app, AInputEvent* 
 							float x = AMotionEvent_getX(event, 0) - vulkanExample->touchPos.x;
 							float y = AMotionEvent_getY(event, 0) - vulkanExample->touchPos.y;
 							if ((x * x + y * y) < deadZone) {
-								vulkanExample->keyPressed(TOUCH_DOUBLE_TAP);
+								vulkanExample->OnKeyPressed(TOUCH_DOUBLE_TAP);
 								vulkanExample->touchDown = false;
 							}
 						}
@@ -1266,7 +1266,7 @@ int32_t VulkanExampleBase::handleAppInput(struct android_app* app, AInputEvent* 
 						vulkanExample->rotation.x += deltaX;
 						vulkanExample->rotation.y -= deltaY;
 
-						vulkanExample->viewChanged();
+						vulkanExample->OnViewChanged();
 
 						vulkanExample->touchPos.x = eventX;
 						vulkanExample->touchPos.y = eventY;
@@ -1294,22 +1294,22 @@ int32_t VulkanExampleBase::handleAppInput(struct android_app* app, AInputEvent* 
 		switch (keyCode)
 		{
 		case AKEYCODE_BUTTON_A:
-			vulkanExample->keyPressed(GAMEPAD_BUTTON_A);
+			vulkanExample->OnKeyPressed(GAMEPAD_BUTTON_A);
 			break;
 		case AKEYCODE_BUTTON_B:
-			vulkanExample->keyPressed(GAMEPAD_BUTTON_B);
+			vulkanExample->OnKeyPressed(GAMEPAD_BUTTON_B);
 			break;
 		case AKEYCODE_BUTTON_X:
-			vulkanExample->keyPressed(GAMEPAD_BUTTON_X);
+			vulkanExample->OnKeyPressed(GAMEPAD_BUTTON_X);
 			break;
 		case AKEYCODE_BUTTON_Y:
-			vulkanExample->keyPressed(GAMEPAD_BUTTON_Y);
+			vulkanExample->OnKeyPressed(GAMEPAD_BUTTON_Y);
 			break;
 		case AKEYCODE_BUTTON_L1:
-			vulkanExample->keyPressed(GAMEPAD_BUTTON_L1);
+			vulkanExample->OnKeyPressed(GAMEPAD_BUTTON_L1);
 			break;
 		case AKEYCODE_BUTTON_R1:
-			vulkanExample->keyPressed(GAMEPAD_BUTTON_R1);
+			vulkanExample->OnKeyPressed(GAMEPAD_BUTTON_R1);
 			break;
 		case AKEYCODE_BUTTON_START:
 			vulkanExample->paused = !vulkanExample->paused;
@@ -1547,7 +1547,7 @@ void VulkanExampleBase::keyboardKey(struct wl_keyboard *keyboard,
 	}
 
 	if (state)
-		keyPressed(key);
+		OnKeyPressed(key);
 }
 
 /*static*/void VulkanExampleBase::keyboardModifiersCb(void *data,
@@ -1881,7 +1881,7 @@ void VulkanExampleBase::handleEvent(const xcb_generic_event_t *event)
 				quit = true;
 				break;
 		}
-		keyPressed(keyEvent->detail);
+		OnKeyPressed(keyEvent->detail);
 	}
 	break;
 	case XCB_DESTROY_NOTIFY:
