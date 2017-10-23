@@ -66,12 +66,10 @@ private:
 	uint32_t destHeight;
 	bool resizing = false;
 	vks::Benchmark benchmark;
-	// Called if the window is resized and some resources have to be recreatesd
 	void windowResize();
-	// Create framebuffers for all requested swap chain images
 	void setupFrameBuffer();
-	// Setup a default render pass
 	void setupRenderPass();
+	void setupDepthStencil();
 protected:
 	// Frame counter to display fps
 	uint32_t frameCounter = 0;
@@ -327,8 +325,6 @@ public:
 
 	// Creates a new (graphics) command pool object storing command buffers
 	void createCommandPool();
-	// Setup default depth and stencil views
-	virtual void setupDepthStencil();
 
 	// Connect and prepare the swap chain
 	void initSwapchain();
