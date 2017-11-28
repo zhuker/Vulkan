@@ -130,6 +130,10 @@ protected:
 		// UI overlay submission and execution
 		VkSemaphore overlayComplete;
 	} semaphores;
+
+	std::vector<VkFence> waitFences;
+	uint32_t frameIndex = 0;
+
 public: 
 	bool prepared = false;
 	uint32_t width = 1280;
@@ -359,6 +363,9 @@ public:
 	// Destroy all command buffers and set their handles to VK_NULL_HANDLE
 	// May be necessary during runtime if options are toggled 
 	void destroyCommandBuffers();
+
+	/** @brief Creates all synchronization primitives used by the base class (fences, semaphores) */
+	void createSynchronizationPrimitives();
 
 	// Command buffer creation
 	// Creates and returns a new command buffer
