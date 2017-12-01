@@ -26,6 +26,7 @@ namespace vks
 			scale = 2.0f;
 		};
 #endif
+		lastUpdateTime = std::chrono::high_resolution_clock::now() - std::chrono::seconds(10);
 
 		// Init ImGui
 		// Color scheme
@@ -538,21 +539,25 @@ namespace vks
 			updateCmdBuffers = true;
 		}
 
-		// Upload data
-		ImDrawVert* vtxDst = (ImDrawVert*)vertexBuffer.mapped;
-		ImDrawIdx* idxDst = (ImDrawIdx*)indexBuffer.mapped;
+		// Cap. update rate at 60ms
+		auto tDiff = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - lastUpdateTime).count();
+		if (((float)tDiff > 1000.0 / 60.0) || updateCmdBuffers) {
+			// Upload data
+			ImDrawVert* vtxDst = (ImDrawVert*)vertexBuffer.mapped;
+			ImDrawIdx* idxDst = (ImDrawIdx*)indexBuffer.mapped;
 
-		for (int n = 0; n < imDrawData->CmdListsCount; n++) {
-			const ImDrawList* cmd_list = imDrawData->CmdLists[n];
-			memcpy(vtxDst, cmd_list->VtxBuffer.Data, cmd_list->VtxBuffer.Size * sizeof(ImDrawVert));
-			memcpy(idxDst, cmd_list->IdxBuffer.Data, cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx));
-			vtxDst += cmd_list->VtxBuffer.Size;
-			idxDst += cmd_list->IdxBuffer.Size;
+			for (int n = 0; n < imDrawData->CmdListsCount; n++) {
+				const ImDrawList* cmd_list = imDrawData->CmdLists[n];
+				memcpy(vtxDst, cmd_list->VtxBuffer.Data, cmd_list->VtxBuffer.Size * sizeof(ImDrawVert));
+				memcpy(idxDst, cmd_list->IdxBuffer.Data, cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx));
+				vtxDst += cmd_list->VtxBuffer.Size;
+				idxDst += cmd_list->IdxBuffer.Size;
+			}
+			// Flush to make writes visible to GPU
+			vertexBuffer.flush();
+			indexBuffer.flush();
+			lastUpdateTime = std::chrono::high_resolution_clock::now();
 		}
-
-		// Flush to make writes visible to GPU
-		vertexBuffer.flush();
-		indexBuffer.flush();
 
 		if (updateCmdBuffers) {
 			updateCommandBuffers();

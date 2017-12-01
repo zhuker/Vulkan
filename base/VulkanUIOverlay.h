@@ -15,6 +15,7 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
 
 #include <vulkan/vulkan.h>
 #include "VulkanTools.h"
@@ -55,6 +56,7 @@ namespace vks
 		vks::Buffer indexBuffer;
 		int32_t vertexCount = 0;
 		int32_t indexCount = 0;
+		std::chrono::high_resolution_clock::time_point lastUpdateTime;
 
 		VkDescriptorPool descriptorPool;
 		VkDescriptorSetLayout descriptorSetLayout;
@@ -64,7 +66,6 @@ namespace vks
 		VkPipeline pipeline;
 		VkRenderPass renderPass;
 		VkCommandPool commandPool;
-		std::vector<bool> frameUpdate{ true };
 
 		VkDeviceMemory fontMemory = VK_NULL_HANDLE;
 		VkImage fontImage = VK_NULL_HANDLE;
