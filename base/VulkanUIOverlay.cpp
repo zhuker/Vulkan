@@ -240,10 +240,9 @@ namespace vks
 
 		// Command buffer execution fences
 		VkFenceCreateInfo fenceCreateInfo = vks::initializers::fenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
-		waitFences.resize(cmdBuffers.size());
+		waitFences.resize(createInfo.fenceCount);
 		for (auto& fence : waitFences) {
 			VK_CHECK_RESULT(vkCreateFence(createInfo.device->logicalDevice, &fenceCreateInfo, nullptr, &fence));
-			fenceCreateInfo.flags = 0;
 		}
 	}
 
@@ -493,6 +492,8 @@ namespace vks
 	void UIOverlay::update()
 	{
 		ImDrawData* imDrawData = ImGui::GetDrawData();
+		bool updateVertexBuffer = false;
+		bool updateIndexBuffer = false;
 		bool updateCmdBuffers = false;
 
 		if (!imDrawData) { return; };
@@ -505,23 +506,35 @@ namespace vks
 
 		// Vertex buffer
 		if ((vertexBuffer.buffer == VK_NULL_HANDLE) || (vertexCount != imDrawData->TotalVtxCount)) {
-			vertexBuffer.unmap();
-			vertexBuffer.destroy();
-			VK_CHECK_RESULT(createInfo.device->createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &vertexBuffer, vertexBufferSize));
-			vertexCount = imDrawData->TotalVtxCount;
-			vertexBuffer.unmap();
-			vertexBuffer.map();
-			updateCmdBuffers = true;
+			updateVertexBuffer = true;
 		}
 
 		// Index buffer
 		VkDeviceSize indexSize = imDrawData->TotalIdxCount * sizeof(ImDrawIdx);
 		if ((indexBuffer.buffer == VK_NULL_HANDLE) || (indexCount < imDrawData->TotalIdxCount)) {
-			indexBuffer.unmap();
-			indexBuffer.destroy();
-			VK_CHECK_RESULT(createInfo.device->createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &indexBuffer, indexBufferSize));
-			indexCount = imDrawData->TotalIdxCount;
-			indexBuffer.map();
+			updateIndexBuffer = true;
+		}
+
+		if (updateVertexBuffer || updateIndexBuffer) {
+			VK_CHECK_RESULT(vkWaitForFences(createInfo.device->logicalDevice, createInfo.fenceCount, waitFences.data(), VK_TRUE, UINT64_MAX));
+
+			if (updateVertexBuffer) {
+				vertexBuffer.unmap();
+				vertexBuffer.destroy();
+				VK_CHECK_RESULT(createInfo.device->createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &vertexBuffer, vertexBufferSize));
+				vertexCount = imDrawData->TotalVtxCount;
+				vertexBuffer.unmap();
+				vertexBuffer.map();
+			}
+
+			if (updateIndexBuffer) {
+				indexBuffer.unmap();
+				indexBuffer.destroy();
+				VK_CHECK_RESULT(createInfo.device->createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &indexBuffer, indexBufferSize));
+				indexCount = imDrawData->TotalIdxCount;
+				indexBuffer.map();
+			}
+
 			updateCmdBuffers = true;
 		}
 

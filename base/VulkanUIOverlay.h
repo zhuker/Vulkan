@@ -45,6 +45,7 @@ namespace vks
 		uint32_t subpassCount = 1;
 		std::vector<VkClearValue> clearValues = {};
 		uint32_t attachmentCount = 1;
+		uint32_t fenceCount;
 	};
 
 	class UIOverlay 
@@ -63,7 +64,7 @@ namespace vks
 		VkPipeline pipeline;
 		VkRenderPass renderPass;
 		VkCommandPool commandPool;
-		std::vector<VkFence> waitFences;
+		std::vector<bool> frameUpdate{ true };
 
 		VkDeviceMemory fontMemory = VK_NULL_HANDLE;
 		VkImage fontImage = VK_NULL_HANDLE;
@@ -86,6 +87,7 @@ namespace vks
 		float scale = 1.0f;
 
 		std::vector<VkCommandBuffer> cmdBuffers;
+		std::vector<VkFence> waitFences;
 
 		UIOverlay(vks::UIOverlayCreateInfo createInfo);
 		~UIOverlay();

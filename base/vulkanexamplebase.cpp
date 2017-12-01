@@ -217,6 +217,7 @@ void VulkanExampleBase::prepare()
 		overlayCreateInfo.depthformat = depthFormat;
 		overlayCreateInfo.width = width;
 		overlayCreateInfo.height = height;
+		overlayCreateInfo.fenceCount = MAX_RENDER_AHEAD;
 		// Virtual function call for example to customize overlay creation
 		OnSetupUIOverlay(overlayCreateInfo);
 		// Load default shaders if not specified by example
@@ -616,6 +617,9 @@ void VulkanExampleBase::prepareFrame()
 	VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFences[frameIndex], VK_TRUE, UINT64_MAX));
 	VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[frameIndex]));
 
+	VK_CHECK_RESULT(vkWaitForFences(device, 1, &UIOverlay->waitFences[frameIndex], VK_TRUE, UINT64_MAX));
+	VK_CHECK_RESULT(vkResetFences(device, 1, &UIOverlay->waitFences[frameIndex]));
+
 	// Acquire the next image from the swap chain
 	VkResult err = swapChain.acquireNextImage(presentCompleteSemaphores[frameIndex], &currentBuffer);
 	// Recreate the swapchain if it's no longer compatible with the surface (OUT_OF_DATE) or no longer optimal for presentation (SUBOPTIMAL)
@@ -641,6 +645,7 @@ void VulkanExampleBase::submitFrame()
 	bool submitOverlay = settings.overlay && UIOverlay->visible;
 
 	if (submitOverlay) {
+
 		// Wait for color attachment output to finish before rendering the text overlay
 		VkPipelineStageFlags stageFlags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		submitInfo.pWaitDstStageMask = &stageFlags;
@@ -656,7 +661,7 @@ void VulkanExampleBase::submitFrame()
 		// Submit current UI overlay command buffer
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &UIOverlay->cmdBuffers[currentBuffer];
-		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, UIOverlay->waitFences[frameIndex]));
 
 		// Reset stage mask
 		submitInfo.pWaitDstStageMask = &submitPipelineStages;
