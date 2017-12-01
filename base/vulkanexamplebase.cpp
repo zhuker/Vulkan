@@ -614,11 +614,13 @@ void VulkanExampleBase::updateOverlay()
 void VulkanExampleBase::prepareFrame()
 {
 	// Wait until last command buffer has finished execution (signalled by fence)
-	VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFences[frameIndex], VK_TRUE, UINT64_MAX));
-	VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[frameIndex]));
-
-	VK_CHECK_RESULT(vkWaitForFences(device, 1, &UIOverlay->waitFences[frameIndex], VK_TRUE, UINT64_MAX));
-	VK_CHECK_RESULT(vkResetFences(device, 1, &UIOverlay->waitFences[frameIndex]));
+	std::vector<VkFence> fences = { waitFences[frameIndex] };
+	if (settings.overlay && UIOverlay->visible) {
+		fences.push_back(UIOverlay->waitFences[frameIndex]);
+	}
+	
+	VK_CHECK_RESULT(vkWaitForFences(device, static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, UINT64_MAX));
+	VK_CHECK_RESULT(vkResetFences(device, static_cast<uint32_t>(fences.size()), fences.data()));
 
 	// Acquire the next image from the swap chain
 	VkResult err = swapChain.acquireNextImage(presentCompleteSemaphores[frameIndex], &currentBuffer);
