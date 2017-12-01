@@ -63,7 +63,7 @@ namespace vks
 		VkPipeline pipeline;
 		VkRenderPass renderPass;
 		VkCommandPool commandPool;
-		VkFence fence;
+		std::vector<VkFence> waitFences;
 
 		VkDeviceMemory fontMemory = VK_NULL_HANDLE;
 		VkImage fontImage = VK_NULL_HANDLE;

@@ -70,7 +70,9 @@ namespace vks
 		}
 		vkFreeCommandBuffers(createInfo.device->logicalDevice, commandPool, static_cast<uint32_t>(cmdBuffers.size()), cmdBuffers.data());
 		vkDestroyCommandPool(createInfo.device->logicalDevice, commandPool, nullptr);
-		vkDestroyFence(createInfo.device->logicalDevice, fence, nullptr);
+		for (auto fence : waitFences) {
+			vkDestroyFence(createInfo.device->logicalDevice, fence, nullptr);
+		}
 	}
 
 	/** Prepare all vulkan resources required to render the UI overlay */
@@ -236,9 +238,13 @@ namespace vks
 		pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
 		VK_CHECK_RESULT(vkCreatePipelineLayout(createInfo.device->logicalDevice, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout));
 
-		// Command buffer execution fence
-		VkFenceCreateInfo fenceCreateInfo = vks::initializers::fenceCreateInfo();
-		VK_CHECK_RESULT(vkCreateFence(createInfo.device->logicalDevice, &fenceCreateInfo, nullptr, &fence));
+		// Command buffer execution fences
+		VkFenceCreateInfo fenceCreateInfo = vks::initializers::fenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
+		waitFences.resize(cmdBuffers.size());
+		for (auto& fence : waitFences) {
+			VK_CHECK_RESULT(vkCreateFence(createInfo.device->logicalDevice, &fenceCreateInfo, nullptr, &fence));
+			fenceCreateInfo.flags = 0;
+		}
 	}
 
 	/** Prepare a separate pipeline for the UI overlay rendering decoupled from the main application */
@@ -560,10 +566,10 @@ namespace vks
 		submitInfo.pCommandBuffers = &cmdBuffers[bufferindex];
 		submitInfo.commandBufferCount = 1;
 
-		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, fence));
+		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[bufferindex]));
 
-		VK_CHECK_RESULT(vkWaitForFences(createInfo.device->logicalDevice, 1, &fence, VK_TRUE, UINT64_MAX));
-		VK_CHECK_RESULT(vkResetFences(createInfo.device->logicalDevice, 1, &fence));
+		VK_CHECK_RESULT(vkWaitForFences(createInfo.device->logicalDevice, 1, &waitFences[bufferindex], VK_TRUE, UINT64_MAX));
+		VK_CHECK_RESULT(vkResetFences(createInfo.device->logicalDevice, 1, &waitFences[bufferindex]));
 	}
 
 	bool UIOverlay::header(const char *caption)
