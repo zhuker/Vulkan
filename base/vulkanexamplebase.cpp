@@ -123,36 +123,21 @@ void VulkanExampleBase::destroyCommandBuffers()
 
 void VulkanExampleBase::createSynchronizationPrimitives()
 {
-	/*
-		Semaphores (Used for correct command ordering)
-	*/
-	VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
-	// Image presentation: Ensures that the image has been presented to the window before we start submitting new commands to the queue
-	VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &semaphores.presentComplete));
-	// Command submission: Ensures that the image is not presented until all commands have been sumbitted and executed
-	VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &semaphores.renderComplete));
-	// Command submission: Ensures that the image is not presented until all commands for the UI overlay have been sumbitted and executed
-	VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &semaphores.overlayComplete));
+	for (uint32_t i = 0; i < MAX_RENDER_AHEAD; i++) {
+		// Semaphores (Used for correct command ordering)
+		VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
+		// Image presentation: Ensures that the image has been presented to the window before we start submitting new commands to the queue
+		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &presentCompleteSemaphores[i]));
+		// Command submission: Ensures that the image is not presented until all commands have been sumbitted and executed
+		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &renderCompleteSemaphores[i]));
+		// Command submission: Ensures that the image is not presented until all commands for the UI overlay have been sumbitted and executed
+		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &overlayCompleteSemaphores[i]));
 
-	// Semaphores will stay the same during application lifetime
-	// Command buffer submission info is set by each example
-	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = &semaphores.presentComplete;
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = &semaphores.renderComplete;
-
-	/*
-		Fences (Used to check draw command buffer completion)
-	*/
-	VkFenceCreateInfo fenceCreateInfo = {};
-	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-	// Only first fence is signaled
-	fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-	waitFences.resize(drawCmdBuffers.size());
-	for (auto& fence : waitFences) {
-		VK_CHECK_RESULT(vkCreateFence(device, &fenceCreateInfo, nullptr, &fence));
-		fenceCreateInfo.flags = 0;
+		// Fence (Used to check draw command buffer completion)
+		VkFenceCreateInfo fenceCreateInfo = vks::initializers::fenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
+		VK_CHECK_RESULT(vkCreateFence(device, &fenceCreateInfo, nullptr, &waitFences[i]));
 	}
+	frameIndex = 0;
 }
 
 VkCommandBuffer VulkanExampleBase::createCommandBuffer(VkCommandBufferLevel level, bool begin)
@@ -303,8 +288,6 @@ void VulkanExampleBase::renderFrame()
 		fpsTimer = 0.0f;
 		frameCounter = 0;
 	}
-	// TODO: Cap UI overlay update rates
-	updateOverlay();
 }
 
 void VulkanExampleBase::renderLoop()
@@ -389,9 +372,6 @@ void VulkanExampleBase::renderLoop()
 				fpsTimer = 0.0f;
 				frameCounter = 0;
 			}
-
-			// TODO: Cap UI overlay update rates/only issue when update requested
-			updateOverlay();
 
 			bool updateView = false;
 
@@ -479,7 +459,6 @@ void VulkanExampleBase::renderLoop()
 			fpsTimer = 0.0f;
 			frameCounter = 0;
 		}
-		updateOverlay();
 	}
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
 	while (!quit)
@@ -528,7 +507,6 @@ void VulkanExampleBase::renderLoop()
 			fpsTimer = 0.0f;
 			frameCounter = 0;
 		}
-		updateOverlay();
 	}
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
 	xcb_flush(connection);
@@ -579,7 +557,6 @@ void VulkanExampleBase::renderLoop()
 			fpsTimer = 0.0f;
 			frameCounter = 0;
 		}
-		updateOverlay();
 	}
 #endif
 	// Flush device to make sure all resources can be freed 
@@ -640,7 +617,7 @@ void VulkanExampleBase::prepareFrame()
 	VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[frameIndex]));
 
 	// Acquire the next image from the swap chain
-	VkResult err = swapChain.acquireNextImage(semaphores.presentComplete, &currentBuffer);
+	VkResult err = swapChain.acquireNextImage(presentCompleteSemaphores[frameIndex], &currentBuffer);
 	// Recreate the swapchain if it's no longer compatible with the surface (OUT_OF_DATE) or no longer optimal for presentation (SUBOPTIMAL)
 	if ((err == VK_ERROR_OUT_OF_DATE_KHR) || (err == VK_SUBOPTIMAL_KHR)) {
 		windowResize();
@@ -649,8 +626,14 @@ void VulkanExampleBase::prepareFrame()
 		VK_CHECK_RESULT(err);
 	}
 
-	frameIndex += 1;
-	frameIndex %= swapChain.imageCount;
+	// Reset stage mask
+	submitInfo.pWaitDstStageMask = &submitPipelineStages;
+	// Wait for swap chain presentation to finish
+	submitInfo.waitSemaphoreCount = 1;
+	submitInfo.pWaitSemaphores = &presentCompleteSemaphores[frameIndex];
+	// Signal ready with scene rendering semaphore
+	submitInfo.signalSemaphoreCount = 1;
+	submitInfo.pSignalSemaphores = &renderCompleteSemaphores[frameIndex];
 }
 
 void VulkanExampleBase::submitFrame()
@@ -665,10 +648,10 @@ void VulkanExampleBase::submitFrame()
 		// Set semaphores
 		// Wait for render complete semaphore
 		submitInfo.waitSemaphoreCount = 1;
-		submitInfo.pWaitSemaphores = &semaphores.renderComplete;
+		submitInfo.pWaitSemaphores = &renderCompleteSemaphores[frameIndex];
 		// Signal ready with UI overlay complete semaphpre
 		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = &semaphores.overlayComplete;
+		submitInfo.pSignalSemaphores = &overlayCompleteSemaphores[frameIndex];
 
 		// Submit current UI overlay command buffer
 		submitInfo.commandBufferCount = 1;
@@ -677,16 +660,23 @@ void VulkanExampleBase::submitFrame()
 
 		// Reset stage mask
 		submitInfo.pWaitDstStageMask = &submitPipelineStages;
-		// Reset wait and signal semaphores for rendering next frame
 		// Wait for swap chain presentation to finish
 		submitInfo.waitSemaphoreCount = 1;
-		submitInfo.pWaitSemaphores = &semaphores.presentComplete;
-		// Signal ready with offscreen semaphore
+		submitInfo.pWaitSemaphores = &presentCompleteSemaphores[frameIndex];
+		// Signal ready with scene rendering semaphore
 		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = &semaphores.renderComplete;
+		submitInfo.pSignalSemaphores = &renderCompleteSemaphores[frameIndex];
 	}
 
-	VK_CHECK_RESULT(swapChain.queuePresent(queue, currentBuffer, submitOverlay ? semaphores.overlayComplete : semaphores.renderComplete));
+	VK_CHECK_RESULT(swapChain.queuePresent(queue, currentBuffer, submitOverlay ? overlayCompleteSemaphores[frameIndex] : renderCompleteSemaphores[frameIndex]));
+
+	// Only check UI overlay update after last frame submission
+	if (frameIndex + 1 == MAX_RENDER_AHEAD) {
+		updateOverlay();
+	}
+
+	frameIndex += 1;
+	frameIndex %= MAX_RENDER_AHEAD;
 }
 
 VulkanExampleBase::VulkanExampleBase(bool enableValidation)
@@ -794,12 +784,11 @@ VulkanExampleBase::~VulkanExampleBase()
 
 	vkDestroyCommandPool(device, cmdPool, nullptr);
 
-	vkDestroySemaphore(device, semaphores.presentComplete, nullptr);
-	vkDestroySemaphore(device, semaphores.renderComplete, nullptr);
-	vkDestroySemaphore(device, semaphores.overlayComplete, nullptr);
-
-	for (auto& fence : waitFences) {
-		vkDestroyFence(device, fence, nullptr);
+	for (uint32_t i = 0; i < MAX_RENDER_AHEAD; i++) {
+		vkDestroySemaphore(device, presentCompleteSemaphores[i], nullptr);
+		vkDestroySemaphore(device, renderCompleteSemaphores[i], nullptr);
+		vkDestroySemaphore(device, overlayCompleteSemaphores[i], nullptr);
+		vkDestroyFence(device, waitFences[i], nullptr);
 	}
 
 	if (UIOverlay) {

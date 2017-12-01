@@ -52,6 +52,8 @@
 #include "camera.hpp"
 #include "benchmark.hpp"
 
+#define MAX_RENDER_AHEAD 3
+
 class VulkanExampleBase
 {
 private:	
@@ -121,17 +123,17 @@ protected:
 	VkPipelineCache pipelineCache;
 	// Wraps the swap chain to present images (framebuffers) to the windowing system
 	VulkanSwapChain swapChain;
-	// Synchronization semaphores
-	struct {
-		// Swap chain image presentation
-		VkSemaphore presentComplete;
-		// Command buffer submission and execution
-		VkSemaphore renderComplete;
-		// UI overlay submission and execution
-		VkSemaphore overlayComplete;
-	} semaphores;
-
-	std::vector<VkFence> waitFences;
+	/*
+		Synchronization primitives
+	*/
+	// Swap chain image presentation
+	std::array<VkSemaphore, MAX_RENDER_AHEAD> presentCompleteSemaphores;
+	// Command buffer submission and execution
+	std::array<VkSemaphore, MAX_RENDER_AHEAD> renderCompleteSemaphores;
+	// UI overlay submission and execution
+	std::array<VkSemaphore, MAX_RENDER_AHEAD> overlayCompleteSemaphores;
+	// Command buffer execution fences
+	std::array<VkFence, MAX_RENDER_AHEAD> waitFences;
 	uint32_t frameIndex = 0;
 
 public: 
