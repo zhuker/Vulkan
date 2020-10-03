@@ -356,7 +356,7 @@ void VulkanSwapChain::create(uint32_t *width, uint32_t *height, bool vsync)
 		}
 		fpDestroySwapchainKHR(device, oldSwapchain, nullptr);
 	}
-	VK_CHECK_RESULT(fpGetSwapchainImagesKHR(device, swapChain, &imageCount, NULL));
+	VK_CHECK_RESULT(fpGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr));
 
 	// Get the swap chain images
 	images.resize(imageCount);

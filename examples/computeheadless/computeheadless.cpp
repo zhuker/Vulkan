@@ -342,9 +342,11 @@ public:
 			VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
 
 			VkDescriptorBufferInfo bufferDescriptor = { deviceBuffer, 0, VK_WHOLE_SIZE };
-			std::vector<VkWriteDescriptorSet> computeWriteDescriptorSets = {
-				vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &bufferDescriptor),
-			};
+
+			const VkWriteDescriptorSet &storageBufferDescSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &bufferDescriptor);
+
+			std::vector<VkWriteDescriptorSet> computeWriteDescriptorSets = {storageBufferDescSet};
+
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(computeWriteDescriptorSets.size()), computeWriteDescriptorSets.data(), 0, NULL);
 
 			VkPipelineCacheCreateInfo pipelineCacheCreateInfo = {};
