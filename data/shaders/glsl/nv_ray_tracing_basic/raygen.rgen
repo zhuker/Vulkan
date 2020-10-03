@@ -31,7 +31,8 @@ void main()
     float tmax = 10000.0;
 
     traceNV(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
-    const float x = float(ololo.pixels[0])/ 84.42f;
+    ololo.pixels[0] = 43;
+//    const float x = float(ololo.pixels[0])/ 84.42f;
     //	values[1] = 44;
-    imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(x, hitValue.g, hitValue.b, 0.0));
+    imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(hitValue, 0.0));
 }
