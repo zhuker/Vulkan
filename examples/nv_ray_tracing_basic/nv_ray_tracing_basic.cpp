@@ -24,6 +24,18 @@ struct GeometryInstance {
 	uint32_t flags : 8;
 	uint64_t accelerationStructureHandle;
 };
+struct HitPy
+{
+    glm::vec3 point;// The point in 3D space that the ray hit.
+    uint  valid;
+    glm::vec3 normal;// The normalized geometry normal
+    float distance;         // The distance measured from the ray origin to this hit.
+	uint  geomID;           // The geometry ID of object in the scene (ignore for now)
+	uint  instID;           // The instance ID of the object in the scene
+	uint  primID;           // The index of the primitive of the mesh hit
+	uint  lidar_id;         // The lidar id of the ray
+    float padding[4];         // The point in 3D space that the ray hit.
+};
 
 // Indices for the different ray tracing shader types used in this example
 #define INDEX_RAYGEN 0
@@ -31,8 +43,6 @@ struct GeometryInstance {
 #define INDEX_CLOSEST_HIT 2
 
 #define NUM_SHADER_GROUPS 3
-
-#define BUFFER_ELEMENTS 32
 
 class VulkanExample : public VulkanExampleBase
 {
@@ -66,7 +76,6 @@ public:
 
     VkBuffer deviceBuffer, hostBuffer;
     VkDeviceMemory deviceMemory, hostMemory;
-    const VkDeviceSize bufferSize = BUFFER_ELEMENTS * sizeof(uint32_t);
 
     struct UniformData {
 		glm::mat4 viewInverse;
@@ -200,11 +209,13 @@ public:
 
     void createStorageBuffer()
     {
-        std::vector<uint32_t> computeInput(BUFFER_ELEMENTS, 42u);
+        const VkDeviceSize bufferSize = width * height * sizeof(HitPy);
 
-        createBuffer(
+		std::vector<HitPy> computeInput(width * height, HitPy{});
+
+		createBuffer(
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
             &hostBuffer,
             &hostMemory,
             bufferSize,
@@ -524,6 +535,8 @@ public:
 			{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV, 1 },
 			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }
         };
 		VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 1);
@@ -553,14 +566,26 @@ public:
         VkWriteDescriptorSet resultImageWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor);
 		VkWriteDescriptorSet uniformBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, &ubo.descriptor);
 
-        VkDescriptorBufferInfo bufferDescriptor = { deviceBuffer, 0, bufferSize };
+        VkDescriptorBufferInfo bufferDescriptor = { deviceBuffer, 0, VK_WHOLE_SIZE };
         VkWriteDescriptorSet storageBufferDescSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3, &bufferDescriptor);
+
+		VkDescriptorBufferInfo vertexBufferDescriptor{};
+        vertexBufferDescriptor.buffer = vertexBuffer.buffer;
+        vertexBufferDescriptor.range = VK_WHOLE_SIZE;
+
+        VkDescriptorBufferInfo indexBufferDescriptor{};
+        indexBufferDescriptor.buffer = indexBuffer.buffer;
+        indexBufferDescriptor.range = VK_WHOLE_SIZE;
+        VkWriteDescriptorSet vertexBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, &vertexBufferDescriptor);
+        VkWriteDescriptorSet indexBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, &indexBufferDescriptor);
 
 		std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
 			accelerationStructureWrite,
 			resultImageWrite,
 			uniformBufferWrite,
-            storageBufferDescSet
+            storageBufferDescSet,
+            vertexBufferWrite,
+            indexBufferWrite
 		};
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
 	}
@@ -590,11 +615,25 @@ public:
 
 		VkDescriptorSetLayoutBinding storageBufferBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_NV, 3);
 
+		VkDescriptorSetLayoutBinding vertexBufferBinding{};
+        vertexBufferBinding.binding = 4;
+        vertexBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        vertexBufferBinding.descriptorCount = 1;
+        vertexBufferBinding.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+
+        VkDescriptorSetLayoutBinding indexBufferBinding{};
+        indexBufferBinding.binding = 5;
+        indexBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        indexBufferBinding.descriptorCount = 1;
+        indexBufferBinding.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+
 		std::vector<VkDescriptorSetLayoutBinding> bindings({
 			accelerationStructureLayoutBinding,
 			resultImageLayoutBinding,
 			uniformBufferBinding,
-            storageBufferBinding
+            storageBufferBinding,
+            vertexBufferBinding,
+            indexBufferBinding
 			});
 
 		VkDescriptorSetLayoutCreateInfo layoutInfo{};
@@ -680,23 +719,23 @@ public:
 		for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
 		{
 			VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
-            // Barrier to ensure that input buffer transfer is finished before compute shader reads from it
-            VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
-            bufferBarrier.buffer = deviceBuffer;
-            bufferBarrier.size = VK_WHOLE_SIZE;
-            bufferBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-            bufferBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
-            vkCmdPipelineBarrier(
-                drawCmdBuffers[i],
-                VK_PIPELINE_STAGE_HOST_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_FLAGS_NONE,
-                0, nullptr,
-                1, &bufferBarrier,
-                0, nullptr);
+//            // Barrier to ensure that input buffer transfer is finished before compute shader reads from it
+//            VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
+//            bufferBarrier.buffer = deviceBuffer;
+//            bufferBarrier.size = VK_WHOLE_SIZE;
+//            bufferBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+//            bufferBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+//            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+//            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+//
+//            vkCmdPipelineBarrier(
+//                drawCmdBuffers[i],
+//                VK_PIPELINE_STAGE_HOST_BIT,
+//                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+//                VK_FLAGS_NONE,
+//                0, nullptr,
+//                1, &bufferBarrier,
+//                0, nullptr);
 
 			/*
 				Dispatch the ray tracing commands
@@ -767,6 +806,7 @@ public:
 			//vkCmdEndRenderPass(drawCmdBuffers[i]);
 
             // Barrier to ensure that shader writes are finished before buffer is read back from GPU
+            VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
             bufferBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             bufferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
             bufferBarrier.buffer = deviceBuffer;
@@ -784,7 +824,7 @@ public:
                 0, nullptr);
             // Read back to host visible buffer
             VkBufferCopy copyBufferRegion = {};
-            copyBufferRegion.size = bufferSize;
+            copyBufferRegion.size = width * height * sizeof(HitPy);
             vkCmdCopyBuffer(drawCmdBuffers[i], deviceBuffer, hostBuffer, 1, &copyBufferRegion);
 
             // Barrier to ensure that buffer copy is finished before host reading from it
@@ -848,29 +888,51 @@ public:
 		prepared = true;
 	}
 
+	void *mapped = nullptr;
+
 	void draw()
 	{
 //		printf("%d\n", currentBuffer);
+		long start = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		VulkanExampleBase::prepareFrame();
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
 		VulkanExampleBase::submitFrame();
 
-        // Make device writes visible to the host
-        void *mapped;
-        vkMapMemory(device, hostMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
-        VkMappedMemoryRange mappedRange = vks::initializers::mappedMemoryRange();
-        mappedRange.memory = hostMemory;
-        mappedRange.offset = 0;
-        mappedRange.size = VK_WHOLE_SIZE;
-        vkInvalidateMappedMemoryRanges(device, 1, &mappedRange);
+		// Make device writes visible to the host
+		if (mapped == nullptr)
+		{
+			size_t size = width * height * sizeof(HitPy);
+			vkMapMemory(device, hostMemory, 0, size, 0, &mapped);
+			VkMappedMemoryRange mappedRange = vks::initializers::mappedMemoryRange();
+			mappedRange.memory              = hostMemory;
+			mappedRange.offset              = 0;
+			mappedRange.size                = size;
+			vkInvalidateMappedMemoryRanges(device, 1, &mappedRange);
+		}
 
-        std::vector<uint32_t> computeOutput(BUFFER_ELEMENTS, 31u);
+		//        std::vector<HitPy> computeOutput(width * height);
+//        memcpy(computeOutput.data(), mapped, width * height * sizeof(HitPy));
         // Copy to output
-        memcpy(computeOutput.data(), mapped, bufferSize);
-        vkUnmapMemory(device, hostMemory);
-		printf("%u\n", computeOutput[0]);
+		HitPy *computeOutput = static_cast<HitPy *>(mapped);
+		int cnt = 0;
+		for (int i = 0; i < width * height; i++)
+		{
+			auto hit = &computeOutput[i];
+			if (hit->valid || hit->distance > 0.0f)
+			{
+				cnt++;
+			}
+		}
+
+		//		vkUnmapMemory(device, hostMemory);
+        long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() - start;
+		printf("rays hit %d %ldmsec\n", cnt, time);
+		//		if (cnt > 0) {
+		//			const auto &iter = std::find_if(computeOutput.begin(), computeOutput.end(), [](const HitPy &hit) { return hit.valid; });
+//			printf("%f,%f,%f\n", iter->point[0], iter->point[1], iter->point[2]);
+//		}
 	}
 
 	void render() final

@@ -9,11 +9,23 @@ layout(binding = 2, set = 0) uniform CameraProperties
     mat4 projInverse;
 } cam;
 
+struct HitPy {
+    vec3  point;// The point in 3D space that the ray hit.
+    uint  valid;
+    vec3  normal;// The normalized geometry normal
+    float distance;// The distance measured from the ray origin to this hit.
+    uint  geomID;// The geometry ID of object in the scene (ignore for now)
+    uint  instID;// The instance ID of the object in the scene
+    uint  primID;// The index of the primitive of the mesh hit
+    uint  lidar_id;// The lidar id of the ray
+    vec4 padding;
+};
+
 layout(binding = 3, set = 0, std140) buffer Pos {
-    uint pixels[];
+    HitPy hits[];
 } ololo;
 
-layout(location = 0) rayPayloadNV vec3 hitValue;
+layout(location = 0) rayPayloadNV HitPy hit;
 
 void main()
 {
@@ -30,9 +42,15 @@ void main()
     float tmin = 0.001;
     float tmax = 10000.0;
 
+    //    const uint idx = gl_LaunchIDNV.x * gl_LaunchIDNV.y;
+//    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = 0;
     traceNV(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
-    ololo.pixels[0] = 43;
-//    const float x = float(ololo.pixels[0])/ 84.42f;
+    //    if (hit.valid) {
+    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y] = hit;
+//    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = hit.valid;
+//    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].distance = hit.distance;
+    //    }
+    //    const float x = float(ololo.pixels[0])/ 84.42f;
     //	values[1] = 44;
-    imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(hitValue, 0.0));
+    imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(hit.valid, hit.valid, hit.valid, 0.0));
 }
