@@ -45,16 +45,9 @@ void main()
     uint cullMask = 0xff;
     float tmin = 0.001;
     float tmax = 10000.0;
+    const uint idx = gl_LaunchSizeNV.x * gl_LaunchIDNV.y + gl_LaunchIDNV.x;
 
-    //    const uint idx = gl_LaunchIDNV.x * gl_LaunchIDNV.y;
-    //    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = 0;
     traceNV(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
-    //    if (hit.valid) {
-    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y] = hit;
-    //    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = hit.valid;
-    //    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].distance = hit.distance;
-    //    }
-    //    const float x = float(ololo.pixels[0])/ 84.42f;
-    //	values[1] = 44;
-    imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(hit.valid, hit.valid, hit.valid, 0.0));
+    ololo.hits[idx] = hit;
+    imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(hit.point, 0.0));
 }

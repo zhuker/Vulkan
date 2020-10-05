@@ -18,4 +18,5 @@ void main()
 {
     hit.valid = 0;
     hit.distance = -1;
+    hit.point = vec3(0,0,0);
 }
