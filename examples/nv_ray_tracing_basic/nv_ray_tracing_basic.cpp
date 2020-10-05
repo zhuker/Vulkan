@@ -333,16 +333,17 @@ public:
 	{
 		// Setup vertices for a single triangle
 		struct Vertex {
-			float pos[3];
+			float pos[4];
 		};
 		std::vector<Vertex> vertices = {
-			{ {  1.0f,  1.0f, 0.0f } },
-			{ { -1.0f,  1.0f, 0.0f } },
-			{ {  0.0f, -1.0f, 0.0f } }
+		    {{0.0f, 0.0f, 0.0f, 0.0f}},
+		    {{0.0f, 1.0f, 0.0f, 0.0f}},
+		    {{1.0f, 0.0f, 0.0f, 0.0f}},
+		    {{1.0f, 1.0f, 0.0f, 0.0f}},
 		};
 
 		// Setup indices
-		std::vector<uint32_t> indices = { 0, 1, 2 };
+		std::vector<uint32_t> indices = {0, 1, 2, 2, 3, 0};
 		indexCount = static_cast<uint32_t>(indices.size());
 
 		// Create buffers
@@ -901,8 +902,8 @@ public:
 		VulkanExampleBase::submitFrame();
 
 		// Make device writes visible to the host
-		if (mapped == nullptr)
-		{
+//		if (mapped == nullptr)
+//		{
 			size_t size = width * height * sizeof(HitPy);
 			vkMapMemory(device, hostMemory, 0, size, 0, &mapped);
 			VkMappedMemoryRange mappedRange = vks::initializers::mappedMemoryRange();
@@ -910,23 +911,25 @@ public:
 			mappedRange.offset              = 0;
 			mappedRange.size                = size;
 			vkInvalidateMappedMemoryRanges(device, 1, &mappedRange);
-		}
+//		}
 
-		//        std::vector<HitPy> computeOutput(width * height);
-//        memcpy(computeOutput.data(), mapped, width * height * sizeof(HitPy));
+		        std::vector<HitPy> computeOutput(width * height, HitPy{});
+        memcpy(computeOutput.data(), mapped, width * height * sizeof(HitPy));
         // Copy to output
-		HitPy *computeOutput = static_cast<HitPy *>(mapped);
+//		HitPy *computeOutput = static_cast<HitPy *>(mapped);
 		int cnt = 0;
+		const auto &hit0 = computeOutput[0];
+		printf("hit0 valid: %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", hit0.valid, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
 		for (int i = 0; i < width * height; i++)
 		{
 			auto hit = &computeOutput[i];
-			if (hit->valid || hit->distance > 0.0f)
+			if (hit->valid)
 			{
 				cnt++;
 			}
 		}
 
-		//		vkUnmapMemory(device, hostMemory);
+        vkUnmapMemory(device, hostMemory);
         long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() - start;
 		printf("rays hit %d %ldmsec\n", cnt, time);
 		//		if (cnt > 0) {

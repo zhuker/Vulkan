@@ -29,13 +29,17 @@ layout(location = 0) rayPayloadNV HitPy hit;
 
 void main()
 {
-    const vec2 pixelCenter = vec2(gl_LaunchIDNV.xy) + vec2(0.5);
+//    const vec2 pixelCenter = vec2(gl_LaunchIDNV.xy) + vec2(0.5);
+    const vec2 pixelCenter = vec2(gl_LaunchIDNV.xy);
     const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeNV.xy);
     vec2 d = inUV * 2.0 - 1.0;
 
-    vec4 origin = cam.viewInverse * vec4(0, 0, 0, 1);
-    vec4 target = cam.projInverse * vec4(d.x, d.y, 1, 1);
-    vec4 direction = cam.viewInverse * vec4(normalize(target.xyz / target.w), 0);
+    vec4 origin =  vec4(0.5, 0.5, -1.0, 0.0);
+    vec4 direction = vec4(0.0, 0.0, 1.0, 0.0);
+
+    //    vec4 origin = cam.viewInverse * vec4(0, 0, 0, 1);
+    //    vec4 target = cam.projInverse * vec4(d.x, d.y, 1, 1);
+    //    vec4 direction = cam.viewInverse * vec4(normalize(target.xyz / target.w), 0);
 
     uint rayFlags = gl_RayFlagsOpaqueNV;
     uint cullMask = 0xff;
@@ -43,12 +47,12 @@ void main()
     float tmax = 10000.0;
 
     //    const uint idx = gl_LaunchIDNV.x * gl_LaunchIDNV.y;
-//    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = 0;
+    //    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = 0;
     traceNV(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
     //    if (hit.valid) {
     ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y] = hit;
-//    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = hit.valid;
-//    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].distance = hit.distance;
+    //    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].valid = hit.valid;
+    //    ololo.hits[gl_LaunchIDNV.x * gl_LaunchIDNV.y].distance = hit.distance;
     //    }
     //    const float x = float(ololo.pixels[0])/ 84.42f;
     //	values[1] = 44;
