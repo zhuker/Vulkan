@@ -30,7 +30,7 @@ def findGlslang():
 glslang_path = findGlslang()
 for root, dirs, files in os.walk('.'):
     for file in files:
-        if file.endswith(".vert") or file.endswith(".frag") or file.endswith(".comp") or file.endswith(".geom") or file.endswith(".tesc") or file.endswith(".tese") or file.endswith(".rgen") or file.endswith(".rchit") or file.endswith(".rmiss"):
+        if file.endswith(".vert") or file.endswith(".frag") or file.endswith(".comp") or file.endswith(".geom") or file.endswith(".tesc") or file.endswith(".tese") or file.endswith(".rgen") or file.endswith(".rchit") or file.endswith(".rmiss") or file.endswith(".rahit"):
             input_file = os.path.join(root, file)
             output_file = input_file + ".spv"
 
@@ -38,7 +38,7 @@ for root, dirs, files in os.walk('.'):
             if args.g:
                 add_params = "-g"
 
-            if file.endswith(".rgen") or file.endswith(".rchit") or file.endswith(".rmiss"):
+            if file.endswith(".rgen") or file.endswith(".rchit") or file.endswith(".rmiss") or file.endswith(".rahit"):
                add_params = add_params + " --target-env vulkan1.2"
 
             res = subprocess.call("%s -V %s -o %s %s" % (glslang_path, input_file, output_file, add_params), shell=True)
