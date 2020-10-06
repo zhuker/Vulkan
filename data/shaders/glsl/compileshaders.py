@@ -30,7 +30,7 @@ def findGlslang():
 glslang_path = findGlslang()
 dir_path = os.path.dirname(os.path.realpath(__file__))
 dir_path = dir_path.replace('\\', '/')
-for root, dirs, files in os.walk(dir_path):
+for root, dirs, files in os.walk('.'):
     for file in files:
         if file.endswith(".vert") or file.endswith(".frag") or file.endswith(".comp") or file.endswith(".geom") or file.endswith(".tesc") or file.endswith(".tese") or file.endswith(".rgen") or file.endswith(".rchit") or file.endswith(".rmiss"):
             input_file = os.path.join(root, file)
