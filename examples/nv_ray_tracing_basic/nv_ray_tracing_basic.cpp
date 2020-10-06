@@ -10,10 +10,10 @@
 
 // Ray tracing acceleration structure
 struct AccelerationStructure {
-	VkDeviceMemory memory;
-	VkAccelerationStructureNV accelerationStructure;
-	uint64_t handle;
-	VkAccelerationStructureInfoNV buildInfo;
+	VkDeviceMemory memory = nullptr;
+	VkAccelerationStructureNV accelerationStructure = nullptr;
+	uint64_t handle = 0;
+	VkAccelerationStructureInfoNV buildInfo{};
 };
 
 struct Vertex {
@@ -94,11 +94,8 @@ public:
 	std::vector<ObjInstance>               instances;
 
 	std::vector<AccelerationStructure> bottomLevelASes;
-	AccelerationStructure topLevelAS;
+	AccelerationStructure topLevelAS{};
 
-//	vks::Buffer vertexBuffer;
-//	vks::Buffer indexBuffer;
-//	uint32_t indexCount;
 	vks::Buffer shaderBindingTable;
 
 	struct StorageImage {
@@ -206,41 +203,40 @@ public:
 	/*
 		The bottom level acceleration structure contains the scene's geometry (vertices, triangles)
 	*/
-	void createBottomLevelAccelerationStructure(AccelerationStructure &as, const VkGeometryNV* geometries)
+	void createBottomLevelAccelerationStructure(AccelerationStructure &blas, const VkGeometryNV *geometries)
 	{
-		VkAccelerationStructureInfoNV accelerationStructureInfo{};
-		accelerationStructureInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-		accelerationStructureInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
-		accelerationStructureInfo.instanceCount = 0;
-		accelerationStructureInfo.geometryCount = 1;
-		accelerationStructureInfo.pGeometries = geometries;
-		as.buildInfo = accelerationStructureInfo;
+		blas.buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+		blas.buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
+		blas.buildInfo.flags         = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+		blas.buildInfo.instanceCount = 0;
+		blas.buildInfo.geometryCount = 1;
+		blas.buildInfo.pGeometries   = geometries;
 
 		VkAccelerationStructureCreateInfoNV accelerationStructureCI{};
 		accelerationStructureCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
-		accelerationStructureCI.info = as.buildInfo;
-		VK_CHECK_RESULT(vkCreateAccelerationStructureNV(device, &accelerationStructureCI, nullptr, &as.accelerationStructure));
+		accelerationStructureCI.info  = blas.buildInfo;
+		VK_CHECK_RESULT(vkCreateAccelerationStructureNV(device, &accelerationStructureCI, nullptr, &blas.accelerationStructure));
 
 		VkAccelerationStructureMemoryRequirementsInfoNV memoryRequirementsInfo{};
-		memoryRequirementsInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		memoryRequirementsInfo.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
-		memoryRequirementsInfo.accelerationStructure = as.accelerationStructure;
+		memoryRequirementsInfo.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		memoryRequirementsInfo.type                  = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		memoryRequirementsInfo.accelerationStructure = blas.accelerationStructure;
 
 		VkMemoryRequirements2 memoryRequirements2{};
 		vkGetAccelerationStructureMemoryRequirementsNV(device, &memoryRequirementsInfo, &memoryRequirements2);
 
 		VkMemoryAllocateInfo memoryAllocateInfo = vks::initializers::memoryAllocateInfo();
-		memoryAllocateInfo.allocationSize = memoryRequirements2.memoryRequirements.size;
-		memoryAllocateInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		VK_CHECK_RESULT(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &as.memory));
+		memoryAllocateInfo.allocationSize       = memoryRequirements2.memoryRequirements.size;
+		memoryAllocateInfo.memoryTypeIndex      = vulkanDevice->getMemoryType(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_CHECK_RESULT(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &blas.memory));
 
 		VkBindAccelerationStructureMemoryInfoNV accelerationStructureMemoryInfo{};
-		accelerationStructureMemoryInfo.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
-		accelerationStructureMemoryInfo.accelerationStructure = as.accelerationStructure;
-		accelerationStructureMemoryInfo.memory = as.memory;
+		accelerationStructureMemoryInfo.sType                 = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		accelerationStructureMemoryInfo.accelerationStructure = blas.accelerationStructure;
+		accelerationStructureMemoryInfo.memory                = blas.memory;
 		VK_CHECK_RESULT(vkBindAccelerationStructureMemoryNV(device, 1, &accelerationStructureMemoryInfo));
 
-		VK_CHECK_RESULT(vkGetAccelerationStructureHandleNV(device, as.accelerationStructure, sizeof(uint64_t), &as.handle));
+		VK_CHECK_RESULT(vkGetAccelerationStructureHandleNV(device, blas.accelerationStructure, sizeof(uint64_t), &blas.handle));
 	}
 
 	/*
@@ -248,16 +244,15 @@ public:
 	*/
 	void createTopLevelAccelerationStructure(uint32_t instanceCount)
 	{
-		VkAccelerationStructureInfoNV accelerationStructureInfo{};
-		accelerationStructureInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-		accelerationStructureInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
-		accelerationStructureInfo.instanceCount = instanceCount;
-		accelerationStructureInfo.geometryCount = 0;
-		topLevelAS.buildInfo = accelerationStructureInfo;
+		topLevelAS.buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+		topLevelAS.buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
+		topLevelAS.buildInfo.flags         = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+		topLevelAS.buildInfo.instanceCount = instanceCount;
+		topLevelAS.buildInfo.geometryCount = 0;
 
 		VkAccelerationStructureCreateInfoNV accelerationStructureCI{};
 		accelerationStructureCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
-		accelerationStructureCI.info = accelerationStructureInfo;
+		accelerationStructureCI.info = topLevelAS.buildInfo;
 		VK_CHECK_RESULT(vkCreateAccelerationStructureNV(device, &accelerationStructureCI, nullptr, &topLevelAS.accelerationStructure));
 
 		VkAccelerationStructureMemoryRequirementsInfoNV memoryRequirementsInfo{};
@@ -345,13 +340,12 @@ public:
 			return createVkGeometryNV(obj);
 		});
 
-		bottomLevelASes.resize(objects.size());
+		bottomLevelASes.resize(objects.size(), AccelerationStructure{});
 		for (size_t i = 0; i < geoms.size(); i++)
 		{
 			createBottomLevelAccelerationStructure(bottomLevelASes[i], &geoms[i]);
 
 			const auto blasScratchSize = getScratchSize(bottomLevelASes[i]);
-
 			vks::Buffer scratchBuffer;
 			VK_CHECK_RESULT(vulkanDevice->createBuffer(
 			    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
