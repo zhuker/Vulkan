@@ -138,9 +138,10 @@ public:
 		vkDestroyImageView(device, storageImage.view, nullptr);
 		vkDestroyImage(device, storageImage.image, nullptr);
 		vkFreeMemory(device, storageImage.memory, nullptr);
-		for(auto &blas : bottomLevelASes) {
-            vkFreeMemory(device, blas.memory, nullptr);
-            vkDestroyAccelerationStructureNV(device, blas.accelerationStructure, nullptr);
+		for (auto &blas : bottomLevelASes)
+		{
+			vkFreeMemory(device, blas.memory, nullptr);
+			vkDestroyAccelerationStructureNV(device, blas.accelerationStructure, nullptr);
 		}
 		vkFreeMemory(device, topLevelAS.memory, nullptr);
 		vkDestroyAccelerationStructureNV(device, topLevelAS.accelerationStructure, nullptr);
@@ -242,7 +243,7 @@ public:
 	/*
 		The top level acceleration structure contains the scene's object instances
 	*/
-	void createTopLevelAccelerationStructure(uint32_t instanceCount)
+	void createTopLevelAccelerationStructure(uint32_t instanceCount, bool update = false)
 	{
 		topLevelAS.buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
 		topLevelAS.buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
@@ -390,7 +391,7 @@ public:
 		}
 	}
 
-	void buildTlas()
+	void buildTlas(bool update = false)
 	{
 		vks::Buffer instanceBuffer;
 
@@ -406,7 +407,8 @@ public:
 		    geometryInstances.size() * sizeof(GeometryInstance),
 		    geometryInstances.data()));
 
-		createTopLevelAccelerationStructure(geometryInstances.size());
+		if (!update)
+    		createTopLevelAccelerationStructure(geometryInstances.size());
 
 		const auto  tlasScratchSize = getScratchSize(topLevelAS);
 		vks::Buffer scratchBuffer;
@@ -416,19 +418,28 @@ public:
 		    &scratchBuffer,
 		    tlasScratchSize));
 		VkCommandBuffer cmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+        rwBarrier(cmdBuffer);
 
-		vkCmdBuildAccelerationStructureNV(
-		    cmdBuffer,
-		    &topLevelAS.buildInfo,
-		    instanceBuffer.buffer,
-		    0,
-		    VK_FALSE,
-		    topLevelAS.accelerationStructure,
-		    VK_NULL_HANDLE,
-		    scratchBuffer.buffer,
-		    0);
-
-		rwBarrier(cmdBuffer);
+		if (update)
+		{
+			// Update the acceleration structure. Note the VK_TRUE parameter to trigger the update,
+			// and the existing TLAS being passed and updated in place
+			vkCmdBuildAccelerationStructureNV(cmdBuffer, &topLevelAS.buildInfo, instanceBuffer.buffer, 0, VK_TRUE, topLevelAS.accelerationStructure,
+			                                  topLevelAS.accelerationStructure, scratchBuffer.buffer, 0);
+		}
+		else
+		{
+			vkCmdBuildAccelerationStructureNV(
+			    cmdBuffer,
+			    &topLevelAS.buildInfo,
+			    instanceBuffer.buffer,
+			    0,
+			    VK_FALSE,
+			    topLevelAS.accelerationStructure,
+			    VK_NULL_HANDLE,
+			    scratchBuffer.buffer,
+			    0);
+		}
 
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 
@@ -769,7 +780,7 @@ public:
         objects.emplace_back(createObject(vertices2, indices2));
         instances.emplace_back(createInstance(0));
         glm::mat3x4 t2 = {
-		    0.5f, 0.0f, 0.0f, 0.0f,
+		    0.1f, 0.0f, 0.0f, 0.0f,
             0.0f, 1.0f, 0.0f, 0.0f,
             0.0f, 0.0f, 1.0f, 0.0f,
 		};
@@ -795,6 +806,17 @@ public:
     int64_t last_update_sec = -1;
 	int64_t start = current_time_msec() / 1000;
 
+	void updateVertices(ObjModel &obj, std::vector<Vertex> &vertices)
+	{
+		obj.vertexBuffer.destroy();
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+		    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		    &obj.vertexBuffer,
+		    vertices.size() * sizeof(Vertex),
+		    vertices.data()));
+	}
+
 	void draw()
 	{
 		VulkanExampleBase::prepareFrame();
@@ -808,18 +830,16 @@ public:
             last_update_sec = sec;
 			auto elapsed = sec - start;
 			//update instance transform
-			auto updated_vertices = vertices1;
-			updated_vertices[0].pos[0] += ((float)elapsed / 10.0f);
+            vertices1[0].pos[2] -= 0.01f;
             printf("%d %ld update instance transform\n", frameNumber, elapsed);
-			objects[0].vertexBuffer.destroy();
-            VK_CHECK_RESULT(vulkanDevice->createBuffer(
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &objects[0].vertexBuffer,
-                updated_vertices.size() * sizeof(Vertex),
-                updated_vertices.data()));
+			updateVertices(objects[0], vertices1);
             auto updated_geom = createVkGeometryNV(objects[0]);
 			createOrUpdateBlas(bottomLevelASes[0], updated_geom, true);
+
+			instances[1].transform[0][0] += 0.01f;
+            instances[1].transform[1][1] += 0.01f;
+
+			buildTlas(true);
 		}
 	}
 
