@@ -83,8 +83,8 @@ public:
 	PFN_vkDestroyAccelerationStructureNV vkDestroyAccelerationStructureNV;
 	PFN_vkBindAccelerationStructureMemoryNV vkBindAccelerationStructureMemoryNV;
 	PFN_vkGetAccelerationStructureHandleNV vkGetAccelerationStructureHandleNV;
-	PFN_vkGetAccelerationStructureMemoryRequirementsNV vkGetAccelerationStructureMemoryRequirementsNV;
-	PFN_vkCmdBuildAccelerationStructureNV vkCmdBuildAccelerationStructureNV;
+    PFN_vkCmdBuildAccelerationStructureNV vkCmdBuildAccelerationStructureNV;
+    PFN_vkGetAccelerationStructureMemoryRequirementsNV vkGetAccelerationStructureMemoryRequirementsNV;
 	PFN_vkCreateRayTracingPipelinesNV vkCreateRayTracingPipelinesNV;
 	PFN_vkGetRayTracingShaderGroupHandlesNV vkGetRayTracingShaderGroupHandlesNV;
 	PFN_vkCmdTraceRaysNV vkCmdTraceRaysNV;
@@ -333,6 +333,49 @@ public:
         return geometryInstance;
     }
 
+	void createOrUpdateBlas(AccelerationStructure &blas, VkGeometryNV &geom, bool update = false)
+	{
+		if (update)
+			blas.buildInfo.pGeometries = &geom;
+		else
+			createBottomLevelAccelerationStructure(blas, &geom);
+
+		const auto  blasScratchSize = getScratchSize(blas);
+		vks::Buffer scratchBuffer;
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+		    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
+		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		    &scratchBuffer,
+		    blasScratchSize));
+
+		VkCommandBuffer cmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+
+		if (update)
+		{
+			// Update the acceleration structure. Note the VK_TRUE parameter to trigger the update,
+			// and the existing BLAS being passed and updated in place
+			vkCmdBuildAccelerationStructureNV(cmdBuffer, &blas.buildInfo, VK_NULL_HANDLE, 0, VK_TRUE, blas.accelerationStructure, blas.accelerationStructure,
+			                                  scratchBuffer.buffer, 0);
+		}
+		else
+		{
+			vkCmdBuildAccelerationStructureNV(
+			    cmdBuffer,
+			    &blas.buildInfo,
+			    VK_NULL_HANDLE,
+			    0,
+			    VK_FALSE,
+			    blas.accelerationStructure,
+			    VK_NULL_HANDLE,
+			    scratchBuffer.buffer,
+			    0);
+		}
+
+		rwBarrier(cmdBuffer);
+		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
+		scratchBuffer.destroy();
+	}
+
 	void buildBlas()
 	{
 		std::vector<VkGeometryNV> geoms;
@@ -343,32 +386,7 @@ public:
 		bottomLevelASes.resize(objects.size(), AccelerationStructure{});
 		for (size_t i = 0; i < geoms.size(); i++)
 		{
-			createBottomLevelAccelerationStructure(bottomLevelASes[i], &geoms[i]);
-
-			const auto blasScratchSize = getScratchSize(bottomLevelASes[i]);
-			vks::Buffer scratchBuffer;
-			VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
-			    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			    &scratchBuffer,
-			    blasScratchSize));
-
-			VkCommandBuffer cmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-			vkCmdBuildAccelerationStructureNV(
-			    cmdBuffer,
-			    &bottomLevelASes[i].buildInfo,
-			    VK_NULL_HANDLE,
-			    0,
-			    VK_FALSE,
-			    bottomLevelASes[i].accelerationStructure,
-			    VK_NULL_HANDLE,
-			    scratchBuffer.buffer,
-			    0);
-
-			rwBarrier(cmdBuffer);
-			vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
-			scratchBuffer.destroy();
+			createOrUpdateBlas(bottomLevelASes[i], geoms[i]);
 		}
 	}
 
@@ -747,10 +765,15 @@ public:
 		vkGetRayTracingShaderGroupHandlesNV = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesNV>(vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesNV"));
 		vkCmdTraceRaysNV = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
-        objects.emplace_back(createObject(vertices2, indices2));
         objects.emplace_back(createObject(vertices1, indices1));
+        objects.emplace_back(createObject(vertices2, indices2));
         instances.emplace_back(createInstance(0));
-        instances.emplace_back(createInstance(1));
+        glm::mat3x4 t2 = {
+		    0.5f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+		};
+        instances.emplace_back(createInstance(1, t2));
 
 		createScene();
 		createStorageImage();
@@ -762,6 +785,16 @@ public:
 		prepared = true;
 	}
 
+	uint32_t frameNumber = 0;
+
+    static int64_t current_time_msec()
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    int64_t last_update_sec = -1;
+	int64_t start = current_time_msec() / 1000;
+
 	void draw()
 	{
 		VulkanExampleBase::prepareFrame();
@@ -769,6 +802,25 @@ public:
 		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
 		VulkanExampleBase::submitFrame();
+		frameNumber++;
+		int64_t sec  = current_time_msec() / 1000;
+		if (last_update_sec != sec) {
+            last_update_sec = sec;
+			auto elapsed = sec - start;
+			//update instance transform
+			auto updated_vertices = vertices1;
+			updated_vertices[0].pos[0] += ((float)elapsed / 10.0f);
+            printf("%d %ld update instance transform\n", frameNumber, elapsed);
+			objects[0].vertexBuffer.destroy();
+            VK_CHECK_RESULT(vulkanDevice->createBuffer(
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                &objects[0].vertexBuffer,
+                updated_vertices.size() * sizeof(Vertex),
+                updated_vertices.data()));
+            auto updated_geom = createVkGeometryNV(objects[0]);
+			createOrUpdateBlas(bottomLevelASes[0], updated_geom, true);
+		}
 	}
 
 	void render() final
