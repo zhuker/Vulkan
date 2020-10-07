@@ -9,32 +9,34 @@
 #include "vulkanexamplebase.h"
 
 // Ray tracing acceleration structure
-struct AccelerationStructure {
-	VkDeviceMemory memory;
+struct AccelerationStructure
+{
+	VkDeviceMemory            memory;
 	VkAccelerationStructureNV accelerationStructure;
-	uint64_t handle;
+	uint64_t                  handle;
 };
 
 // Ray tracing geometry instance
-struct GeometryInstance {
+struct GeometryInstance
+{
 	glm::mat3x4 transform;
-	uint32_t instanceId : 24;
-	uint32_t mask : 8;
-	uint32_t instanceOffset : 24;
-	uint32_t flags : 8;
-	uint64_t accelerationStructureHandle;
+	uint32_t    instanceId : 24;
+	uint32_t    mask : 8;
+	uint32_t    instanceOffset : 24;
+	uint32_t    flags : 8;
+	uint64_t    accelerationStructureHandle;
 };
 struct HitPy
 {
-    glm::vec3 point;// The point in 3D space that the ray hit.
-    uint  valid;
-    glm::vec3 normal;// The normalized geometry normal
-    float distance;         // The distance measured from the ray origin to this hit.
-	uint  geomID;           // The geometry ID of object in the scene (ignore for now)
-	uint  instID;           // The instance ID of the object in the scene
-	uint  primID;           // The index of the primitive of the mesh hit
-	uint  lidar_id;         // The lidar id of the ray
-    float padding[4];         // The point in 3D space that the ray hit.
+	glm::vec3 point;        // The point in 3D space that the ray hit.
+	uint      valid;
+	glm::vec3 normal;            // The normalized geometry normal
+	float     distance;          // The distance measured from the ray origin to this hit.
+	uint      geomID;            // The geometry ID of object in the scene (ignore for now)
+	uint      instID;            // The instance ID of the object in the scene
+	uint      primID;            // The index of the primitive of the mesh hit
+	uint      lidar_id;          // The lidar id of the ray
+	float     padding[4];        // The point in 3D space that the ray hit.
 };
 
 // Indices for the different ray tracing shader types used in this example
@@ -46,16 +48,16 @@ struct HitPy
 
 class VulkanExample : public VulkanExampleBase
 {
-public:
-	PFN_vkCreateAccelerationStructureNV vkCreateAccelerationStructureNV;
-	PFN_vkDestroyAccelerationStructureNV vkDestroyAccelerationStructureNV;
-	PFN_vkBindAccelerationStructureMemoryNV vkBindAccelerationStructureMemoryNV;
-	PFN_vkGetAccelerationStructureHandleNV vkGetAccelerationStructureHandleNV;
+  public:
+	PFN_vkCreateAccelerationStructureNV                vkCreateAccelerationStructureNV;
+	PFN_vkDestroyAccelerationStructureNV               vkDestroyAccelerationStructureNV;
+	PFN_vkBindAccelerationStructureMemoryNV            vkBindAccelerationStructureMemoryNV;
+	PFN_vkGetAccelerationStructureHandleNV             vkGetAccelerationStructureHandleNV;
 	PFN_vkGetAccelerationStructureMemoryRequirementsNV vkGetAccelerationStructureMemoryRequirementsNV;
-	PFN_vkCmdBuildAccelerationStructureNV vkCmdBuildAccelerationStructureNV;
-	PFN_vkCreateRayTracingPipelinesNV vkCreateRayTracingPipelinesNV;
-	PFN_vkGetRayTracingShaderGroupHandlesNV vkGetRayTracingShaderGroupHandlesNV;
-	PFN_vkCmdTraceRaysNV vkCmdTraceRaysNV;
+	PFN_vkCmdBuildAccelerationStructureNV              vkCmdBuildAccelerationStructureNV;
+	PFN_vkCreateRayTracingPipelinesNV                  vkCreateRayTracingPipelinesNV;
+	PFN_vkGetRayTracingShaderGroupHandlesNV            vkGetRayTracingShaderGroupHandlesNV;
+	PFN_vkCmdTraceRaysNV                               vkCmdTraceRaysNV;
 
 	VkPhysicalDeviceRayTracingPropertiesNV rayTracingProperties{};
 
@@ -64,36 +66,39 @@ public:
 
 	vks::Buffer vertexBuffer;
 	vks::Buffer indexBuffer;
-	uint32_t indexCount;
+	uint32_t    indexCount;
 	vks::Buffer shaderBindingTable;
 
-	struct StorageImage {
+	struct StorageImage
+	{
 		VkDeviceMemory memory;
-		VkImage image;
-		VkImageView view;
-		VkFormat format;
+		VkImage        image;
+		VkImageView    view;
+		VkFormat       format;
 	} storageImage;
 
-    VkBuffer deviceBuffer, hostBuffer;
-    VkDeviceMemory deviceMemory, hostMemory;
+	VkBuffer       deviceBuffer, hostBuffer;
+	VkDeviceMemory deviceMemory, hostMemory;
 
-    struct UniformData {
+	struct UniformData
+	{
 		glm::mat4 viewInverse;
 		glm::mat4 projInverse;
 	} uniformData;
 	vks::Buffer ubo;
 
-	VkPipeline pipeline;
-	VkPipelineLayout pipelineLayout;
-	VkDescriptorSet descriptorSet;
+	VkPipeline            pipeline;
+	VkPipelineLayout      pipelineLayout;
+	VkDescriptorSet       descriptorSet;
 	VkDescriptorSetLayout descriptorSetLayout;
 
-	VulkanExample() : VulkanExampleBase()
+	VulkanExample() :
+	    VulkanExampleBase()
 	{
-		title = "VK_NV_ray_tracing";
+		title            = "VK_NV_ray_tracing";
 		settings.overlay = true;
-		camera.type = Camera::CameraType::lookat;
-		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 512.0f);
+		camera.type      = Camera::CameraType::lookat;
+		camera.setPerspective(60.0f, (float) width / (float) height, 0.1f, 512.0f);
 		camera.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
 		camera.setTranslation(glm::vec3(0.0f, 0.0f, -2.5f));
 		// Enable instance and device extensions required to use VK_NV_ray_tracing
@@ -126,163 +131,166 @@ public:
 	void createStorageImage()
 	{
 		VkImageCreateInfo image = vks::initializers::imageCreateInfo();
-		image.imageType = VK_IMAGE_TYPE_2D;
-		image.format = swapChain.colorFormat;
-		image.extent.width = width;
-		image.extent.height = height;
-		image.extent.depth = 1;
-		image.mipLevels = 1;
-		image.arrayLayers = 1;
-		image.samples = VK_SAMPLE_COUNT_1_BIT;
-		image.tiling = VK_IMAGE_TILING_OPTIMAL;
-		image.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-		image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		image.imageType         = VK_IMAGE_TYPE_2D;
+		image.format            = swapChain.colorFormat;
+		image.extent.width      = width;
+		image.extent.height     = height;
+		image.extent.depth      = 1;
+		image.mipLevels         = 1;
+		image.arrayLayers       = 1;
+		image.samples           = VK_SAMPLE_COUNT_1_BIT;
+		image.tiling            = VK_IMAGE_TILING_OPTIMAL;
+		image.usage             = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+		image.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
 		VK_CHECK_RESULT(vkCreateImage(device, &image, nullptr, &storageImage.image));
 
 		VkMemoryRequirements memReqs;
 		vkGetImageMemoryRequirements(device, storageImage.image, &memReqs);
 		VkMemoryAllocateInfo memoryAllocateInfo = vks::initializers::memoryAllocateInfo();
-		memoryAllocateInfo.allocationSize = memReqs.size;
-		memoryAllocateInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		memoryAllocateInfo.allocationSize       = memReqs.size;
+		memoryAllocateInfo.memoryTypeIndex      = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		VK_CHECK_RESULT(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &storageImage.memory));
 		VK_CHECK_RESULT(vkBindImageMemory(device, storageImage.image, storageImage.memory, 0));
 
-		VkImageViewCreateInfo colorImageView = vks::initializers::imageViewCreateInfo();
-		colorImageView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		colorImageView.format = swapChain.colorFormat;
-		colorImageView.subresourceRange = {};
-		colorImageView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		colorImageView.subresourceRange.baseMipLevel = 0;
-		colorImageView.subresourceRange.levelCount = 1;
+		VkImageViewCreateInfo colorImageView           = vks::initializers::imageViewCreateInfo();
+		colorImageView.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+		colorImageView.format                          = swapChain.colorFormat;
+		colorImageView.subresourceRange                = {};
+		colorImageView.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+		colorImageView.subresourceRange.baseMipLevel   = 0;
+		colorImageView.subresourceRange.levelCount     = 1;
 		colorImageView.subresourceRange.baseArrayLayer = 0;
-		colorImageView.subresourceRange.layerCount = 1;
-		colorImageView.image = storageImage.image;
+		colorImageView.subresourceRange.layerCount     = 1;
+		colorImageView.image                           = storageImage.image;
 		VK_CHECK_RESULT(vkCreateImageView(device, &colorImageView, nullptr, &storageImage.view));
 
 		VkCommandBuffer cmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
 		vks::tools::setImageLayout(cmdBuffer, storageImage.image,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_GENERAL,
-			{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 });
+		                           VK_IMAGE_LAYOUT_UNDEFINED,
+		                           VK_IMAGE_LAYOUT_GENERAL,
+		                           {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 	}
 
-    VkResult createBuffer(VkBufferUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkBuffer *buffer, VkDeviceMemory *memory, VkDeviceSize size, void *data = nullptr)
-    {
-        // Create the buffer handle
-        VkBufferCreateInfo bufferCreateInfo = vks::initializers::bufferCreateInfo(usageFlags, size);
-        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_CHECK_RESULT(vkCreateBuffer(device, &bufferCreateInfo, nullptr, buffer));
+	VkResult createBuffer(VkBufferUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkBuffer *buffer, VkDeviceMemory *memory, VkDeviceSize size, void *data = nullptr)
+	{
+		// Create the buffer handle
+		VkBufferCreateInfo bufferCreateInfo = vks::initializers::bufferCreateInfo(usageFlags, size);
+		bufferCreateInfo.sharingMode        = VK_SHARING_MODE_EXCLUSIVE;
+		VK_CHECK_RESULT(vkCreateBuffer(device, &bufferCreateInfo, nullptr, buffer));
 
-        // Create the memory backing up the buffer handle
-        VkPhysicalDeviceMemoryProperties deviceMemoryProperties;
-        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &deviceMemoryProperties);
-        VkMemoryRequirements memReqs;
-        VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
-        vkGetBufferMemoryRequirements(device, *buffer, &memReqs);
-        memAlloc.allocationSize = memReqs.size;
-        // Find a memory type index that fits the properties of the buffer
-        bool memTypeFound = false;
-        for (uint32_t i = 0; i < deviceMemoryProperties.memoryTypeCount; i++) {
-            if ((memReqs.memoryTypeBits & 1u) == 1) {
-                if ((deviceMemoryProperties.memoryTypes[i].propertyFlags & memoryPropertyFlags) == memoryPropertyFlags) {
-                    memAlloc.memoryTypeIndex = i;
-                    memTypeFound = true;
-                }
-            }
-            memReqs.memoryTypeBits >>= 1u;
-        }
-        assert(memTypeFound);
-        VK_CHECK_RESULT(vkAllocateMemory(device, &memAlloc, nullptr, memory));
+		// Create the memory backing up the buffer handle
+		VkPhysicalDeviceMemoryProperties deviceMemoryProperties;
+		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &deviceMemoryProperties);
+		VkMemoryRequirements memReqs;
+		VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
+		vkGetBufferMemoryRequirements(device, *buffer, &memReqs);
+		memAlloc.allocationSize = memReqs.size;
+		// Find a memory type index that fits the properties of the buffer
+		bool memTypeFound = false;
+		for (uint32_t i = 0; i < deviceMemoryProperties.memoryTypeCount; i++)
+		{
+			if ((memReqs.memoryTypeBits & 1u) == 1)
+			{
+				if ((deviceMemoryProperties.memoryTypes[i].propertyFlags & memoryPropertyFlags) == memoryPropertyFlags)
+				{
+					memAlloc.memoryTypeIndex = i;
+					memTypeFound             = true;
+				}
+			}
+			memReqs.memoryTypeBits >>= 1u;
+		}
+		assert(memTypeFound);
+		VK_CHECK_RESULT(vkAllocateMemory(device, &memAlloc, nullptr, memory));
 
-        if (data != nullptr) {
-            void *mapped;
-            VK_CHECK_RESULT(vkMapMemory(device, *memory, 0, size, 0, &mapped));
-            memcpy(mapped, data, size);
-            vkUnmapMemory(device, *memory);
-        }
+		if (data != nullptr)
+		{
+			void *mapped;
+			VK_CHECK_RESULT(vkMapMemory(device, *memory, 0, size, 0, &mapped));
+			memcpy(mapped, data, size);
+			vkUnmapMemory(device, *memory);
+		}
 
-        VK_CHECK_RESULT(vkBindBufferMemory(device, *buffer, *memory, 0));
+		VK_CHECK_RESULT(vkBindBufferMemory(device, *buffer, *memory, 0));
 
-        return VK_SUCCESS;
-    }
+		return VK_SUCCESS;
+	}
 
-    void createStorageBuffer()
-    {
-        const VkDeviceSize bufferSize = width * height * sizeof(HitPy);
+	void createStorageBuffer()
+	{
+		const VkDeviceSize bufferSize = width * height * sizeof(HitPy);
 
 		std::vector<HitPy> computeInput(width * height, HitPy{});
 
 		createBuffer(
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-            &hostBuffer,
-            &hostMemory,
-            bufferSize,
-            computeInput.data());
+		    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+		    &hostBuffer,
+		    &hostMemory,
+		    bufferSize,
+		    computeInput.data());
 
-        // Flush writes to host visible buffer
-        void* mapped;
-        vkMapMemory(device, hostMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
-        VkMappedMemoryRange mappedRange = vks::initializers::mappedMemoryRange();
-        mappedRange.memory = hostMemory;
-        mappedRange.offset = 0;
-        mappedRange.size = VK_WHOLE_SIZE;
-        vkFlushMappedMemoryRanges(device, 1, &mappedRange);
-        vkUnmapMemory(device, hostMemory);
+		// Flush writes to host visible buffer
+		void *mapped;
+		vkMapMemory(device, hostMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
+		VkMappedMemoryRange mappedRange = vks::initializers::mappedMemoryRange();
+		mappedRange.memory              = hostMemory;
+		mappedRange.offset              = 0;
+		mappedRange.size                = VK_WHOLE_SIZE;
+		vkFlushMappedMemoryRanges(device, 1, &mappedRange);
+		vkUnmapMemory(device, hostMemory);
 
-//        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_RAY_TRACING_BIT_NV | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		//        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_RAY_TRACING_BIT_NV | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 
-        createBuffer(
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &deviceBuffer,
-            &deviceMemory,
-            bufferSize);
+		createBuffer(
+		    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		    &deviceBuffer,
+		    &deviceMemory,
+		    bufferSize);
 
-        // Copy to staging buffer
-        VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-        VkBufferCopy copyRegion = {};
-        copyRegion.size = bufferSize;
-        vkCmdCopyBuffer(copyCmd, hostBuffer, deviceBuffer, 1, &copyRegion);
-        vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
-
-    }
+		// Copy to staging buffer
+		VkCommandBuffer copyCmd    = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		VkBufferCopy    copyRegion = {};
+		copyRegion.size            = bufferSize;
+		vkCmdCopyBuffer(copyCmd, hostBuffer, deviceBuffer, 1, &copyRegion);
+		vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
+	}
 
 	/*
 		The bottom level acceleration structure contains the scene's geometry (vertices, triangles)
 	*/
-	void createBottomLevelAccelerationStructure(const VkGeometryNV* geometries)
+	void createBottomLevelAccelerationStructure(const VkGeometryNV *geometries)
 	{
 		VkAccelerationStructureInfoNV accelerationStructureInfo{};
-		accelerationStructureInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-		accelerationStructureInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
+		accelerationStructureInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+		accelerationStructureInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
 		accelerationStructureInfo.instanceCount = 0;
 		accelerationStructureInfo.geometryCount = 1;
-		accelerationStructureInfo.pGeometries = geometries;
+		accelerationStructureInfo.pGeometries   = geometries;
 
 		VkAccelerationStructureCreateInfoNV accelerationStructureCI{};
 		accelerationStructureCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
-		accelerationStructureCI.info = accelerationStructureInfo;
+		accelerationStructureCI.info  = accelerationStructureInfo;
 		VK_CHECK_RESULT(vkCreateAccelerationStructureNV(device, &accelerationStructureCI, nullptr, &bottomLevelAS.accelerationStructure));
 
 		VkAccelerationStructureMemoryRequirementsInfoNV memoryRequirementsInfo{};
-		memoryRequirementsInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		memoryRequirementsInfo.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		memoryRequirementsInfo.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		memoryRequirementsInfo.type                  = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
 		memoryRequirementsInfo.accelerationStructure = bottomLevelAS.accelerationStructure;
 
 		VkMemoryRequirements2 memoryRequirements2{};
 		vkGetAccelerationStructureMemoryRequirementsNV(device, &memoryRequirementsInfo, &memoryRequirements2);
 
 		VkMemoryAllocateInfo memoryAllocateInfo = vks::initializers::memoryAllocateInfo();
-		memoryAllocateInfo.allocationSize = memoryRequirements2.memoryRequirements.size;
-		memoryAllocateInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		memoryAllocateInfo.allocationSize       = memoryRequirements2.memoryRequirements.size;
+		memoryAllocateInfo.memoryTypeIndex      = vulkanDevice->getMemoryType(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		VK_CHECK_RESULT(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &bottomLevelAS.memory));
 
 		VkBindAccelerationStructureMemoryInfoNV accelerationStructureMemoryInfo{};
-		accelerationStructureMemoryInfo.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		accelerationStructureMemoryInfo.sType                 = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
 		accelerationStructureMemoryInfo.accelerationStructure = bottomLevelAS.accelerationStructure;
-		accelerationStructureMemoryInfo.memory = bottomLevelAS.memory;
+		accelerationStructureMemoryInfo.memory                = bottomLevelAS.memory;
 		VK_CHECK_RESULT(vkBindAccelerationStructureMemoryNV(device, 1, &accelerationStructureMemoryInfo));
 
 		VK_CHECK_RESULT(vkGetAccelerationStructureHandleNV(device, bottomLevelAS.accelerationStructure, sizeof(uint64_t), &bottomLevelAS.handle));
@@ -294,33 +302,33 @@ public:
 	void createTopLevelAccelerationStructure()
 	{
 		VkAccelerationStructureInfoNV accelerationStructureInfo{};
-		accelerationStructureInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-		accelerationStructureInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
+		accelerationStructureInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+		accelerationStructureInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
 		accelerationStructureInfo.instanceCount = 1;
 		accelerationStructureInfo.geometryCount = 0;
 
 		VkAccelerationStructureCreateInfoNV accelerationStructureCI{};
 		accelerationStructureCI.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_NV;
-		accelerationStructureCI.info = accelerationStructureInfo;
+		accelerationStructureCI.info  = accelerationStructureInfo;
 		VK_CHECK_RESULT(vkCreateAccelerationStructureNV(device, &accelerationStructureCI, nullptr, &topLevelAS.accelerationStructure));
 
 		VkAccelerationStructureMemoryRequirementsInfoNV memoryRequirementsInfo{};
-		memoryRequirementsInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		memoryRequirementsInfo.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
+		memoryRequirementsInfo.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
+		memoryRequirementsInfo.type                  = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_OBJECT_NV;
 		memoryRequirementsInfo.accelerationStructure = topLevelAS.accelerationStructure;
 
 		VkMemoryRequirements2 memoryRequirements2{};
 		vkGetAccelerationStructureMemoryRequirementsNV(device, &memoryRequirementsInfo, &memoryRequirements2);
 
 		VkMemoryAllocateInfo memoryAllocateInfo = vks::initializers::memoryAllocateInfo();
-		memoryAllocateInfo.allocationSize = memoryRequirements2.memoryRequirements.size;
-		memoryAllocateInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		memoryAllocateInfo.allocationSize       = memoryRequirements2.memoryRequirements.size;
+		memoryAllocateInfo.memoryTypeIndex      = vulkanDevice->getMemoryType(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		VK_CHECK_RESULT(vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &topLevelAS.memory));
 
 		VkBindAccelerationStructureMemoryInfoNV accelerationStructureMemoryInfo{};
-		accelerationStructureMemoryInfo.sType = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
+		accelerationStructureMemoryInfo.sType                 = VK_STRUCTURE_TYPE_BIND_ACCELERATION_STRUCTURE_MEMORY_INFO_NV;
 		accelerationStructureMemoryInfo.accelerationStructure = topLevelAS.accelerationStructure;
-		accelerationStructureMemoryInfo.memory = topLevelAS.memory;
+		accelerationStructureMemoryInfo.memory                = topLevelAS.memory;
 		VK_CHECK_RESULT(vkBindAccelerationStructureMemoryNV(device, 1, &accelerationStructureMemoryInfo));
 
 		VK_CHECK_RESULT(vkGetAccelerationStructureHandleNV(device, topLevelAS.accelerationStructure, sizeof(uint64_t), &topLevelAS.handle));
@@ -332,7 +340,8 @@ public:
 	void createScene()
 	{
 		// Setup vertices for a single triangle
-		struct Vertex {
+		struct Vertex
+		{
 			float pos[4];
 		};
 		std::vector<Vertex> vertices = {
@@ -344,46 +353,46 @@ public:
 
 		// Setup indices
 		std::vector<uint32_t> indices = {0, 1, 2, 2, 3, 0};
-		indexCount = static_cast<uint32_t>(indices.size());
+		indexCount                    = static_cast<uint32_t>(indices.size());
 
 		// Create buffers
 		// For the sake of simplicity we won't stage the vertex data to the gpu memory
 		// Vertex buffer
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&vertexBuffer,
-			vertices.size() * sizeof(Vertex),
-			vertices.data()));
+		    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		    &vertexBuffer,
+		    vertices.size() * sizeof(Vertex),
+		    vertices.data()));
 		// Index buffer
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&indexBuffer,
-			indices.size() * sizeof(uint32_t),
-			indices.data()));
+		    VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		    &indexBuffer,
+		    indices.size() * sizeof(uint32_t),
+		    indices.data()));
 
 		/*
 			Create the bottom level acceleration structure containing the actual scene geometry
 		*/
 		VkGeometryNV geometry{};
-		geometry.sType = VK_STRUCTURE_TYPE_GEOMETRY_NV;
-		geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_NV;
-		geometry.geometry.triangles.sType = VK_STRUCTURE_TYPE_GEOMETRY_TRIANGLES_NV;
-		geometry.geometry.triangles.vertexData = vertexBuffer.buffer;
-		geometry.geometry.triangles.vertexOffset = 0;
-		geometry.geometry.triangles.vertexCount = static_cast<uint32_t>(vertices.size());
-		geometry.geometry.triangles.vertexStride = sizeof(Vertex);
-		geometry.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-		geometry.geometry.triangles.indexData = indexBuffer.buffer;
-		geometry.geometry.triangles.indexOffset = 0;
-		geometry.geometry.triangles.indexCount = indexCount;
-		geometry.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
-		geometry.geometry.triangles.transformData = VK_NULL_HANDLE;
+		geometry.sType                              = VK_STRUCTURE_TYPE_GEOMETRY_NV;
+		geometry.geometryType                       = VK_GEOMETRY_TYPE_TRIANGLES_NV;
+		geometry.geometry.triangles.sType           = VK_STRUCTURE_TYPE_GEOMETRY_TRIANGLES_NV;
+		geometry.geometry.triangles.vertexData      = vertexBuffer.buffer;
+		geometry.geometry.triangles.vertexOffset    = 0;
+		geometry.geometry.triangles.vertexCount     = static_cast<uint32_t>(vertices.size());
+		geometry.geometry.triangles.vertexStride    = sizeof(Vertex);
+		geometry.geometry.triangles.vertexFormat    = VK_FORMAT_R32G32B32_SFLOAT;
+		geometry.geometry.triangles.indexData       = indexBuffer.buffer;
+		geometry.geometry.triangles.indexOffset     = 0;
+		geometry.geometry.triangles.indexCount      = indexCount;
+		geometry.geometry.triangles.indexType       = VK_INDEX_TYPE_UINT32;
+		geometry.geometry.triangles.transformData   = VK_NULL_HANDLE;
 		geometry.geometry.triangles.transformOffset = 0;
-		geometry.geometry.aabbs = {};
-		geometry.geometry.aabbs.sType = { VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV };
-		geometry.flags = VK_GEOMETRY_OPAQUE_BIT_NV;
+		geometry.geometry.aabbs                     = {};
+		geometry.geometry.aabbs.sType               = {VK_STRUCTURE_TYPE_GEOMETRY_AABB_NV};
+		geometry.flags                              = VK_GEOMETRY_OPAQUE_BIT_NV;
 
 		createBottomLevelAccelerationStructure(&geometry);
 
@@ -395,25 +404,34 @@ public:
 		vks::Buffer instanceBuffer;
 
 		glm::mat3x4 transform = {
-			1.0f, 0.0f, 0.0f, 0.0f,
-			0.0f, 1.0f, 0.0f, 0.0f,
-			0.0f, 0.0f, 1.0f, 0.0f,
+		    1.0f,
+		    0.0f,
+		    0.0f,
+		    0.0f,
+		    0.0f,
+		    1.0f,
+		    0.0f,
+		    0.0f,
+		    0.0f,
+		    0.0f,
+		    1.0f,
+		    0.0f,
 		};
 
 		GeometryInstance geometryInstance{};
-		geometryInstance.transform = transform;
-		geometryInstance.instanceId = 0;
-		geometryInstance.mask = 0xff;
-		geometryInstance.instanceOffset = 0;
-		geometryInstance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
+		geometryInstance.transform                   = transform;
+		geometryInstance.instanceId                  = 0;
+		geometryInstance.mask                        = 0xff;
+		geometryInstance.instanceOffset              = 0;
+		geometryInstance.flags                       = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
 		geometryInstance.accelerationStructureHandle = bottomLevelAS.handle;
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&instanceBuffer,
-			sizeof(GeometryInstance),
-			&geometryInstance));
+		    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		    &instanceBuffer,
+		    sizeof(GeometryInstance),
+		    &geometryInstance));
 
 		createTopLevelAccelerationStructure();
 
@@ -424,7 +442,7 @@ public:
 		// Acceleration structure build requires some scratch space to store temporary information
 		VkAccelerationStructureMemoryRequirementsInfoNV memoryRequirementsInfo{};
 		memoryRequirementsInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		memoryRequirementsInfo.type = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		memoryRequirementsInfo.type  = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
 
 		VkMemoryRequirements2 memReqBottomLevelAS;
 		memoryRequirementsInfo.accelerationStructure = bottomLevelAS.accelerationStructure;
@@ -438,10 +456,10 @@ public:
 
 		vks::Buffer scratchBuffer;
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			&scratchBuffer,
-			scratchBufferSize));
+		    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
+		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		    &scratchBuffer,
+		    scratchBufferSize));
 
 		VkCommandBuffer cmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
 
@@ -449,45 +467,45 @@ public:
 			Build bottom level acceleration structure
 		*/
 		VkAccelerationStructureInfoNV buildInfo{};
-		buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
-		buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
+		buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
+		buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_NV;
 		buildInfo.geometryCount = 1;
-		buildInfo.pGeometries = &geometry;
+		buildInfo.pGeometries   = &geometry;
 
 		vkCmdBuildAccelerationStructureNV(
-			cmdBuffer,
-			&buildInfo,
-			VK_NULL_HANDLE,
-			0,
-			VK_FALSE,
-			bottomLevelAS.accelerationStructure,
-			VK_NULL_HANDLE,
-			scratchBuffer.buffer,
-			0);
+		    cmdBuffer,
+		    &buildInfo,
+		    VK_NULL_HANDLE,
+		    0,
+		    VK_FALSE,
+		    bottomLevelAS.accelerationStructure,
+		    VK_NULL_HANDLE,
+		    scratchBuffer.buffer,
+		    0);
 
 		VkMemoryBarrier memoryBarrier = vks::initializers::memoryBarrier();
-		memoryBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV;
-		memoryBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV;
+		memoryBarrier.srcAccessMask   = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV;
+		memoryBarrier.dstAccessMask   = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV;
 		vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, 0, 1, &memoryBarrier, 0, 0, 0, nullptr);
 
 		/*
 			Build top-level acceleration structure
 		*/
-		buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
-		buildInfo.pGeometries = nullptr;
+		buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
+		buildInfo.pGeometries   = nullptr;
 		buildInfo.geometryCount = 0;
 		buildInfo.instanceCount = 1;
 
 		vkCmdBuildAccelerationStructureNV(
-			cmdBuffer,
-			&buildInfo,
-			instanceBuffer.buffer,
-			0,
-			VK_FALSE,
-			topLevelAS.accelerationStructure,
-			VK_NULL_HANDLE,
-			scratchBuffer.buffer,
-			0);
+		    cmdBuffer,
+		    &buildInfo,
+		    instanceBuffer.buffer,
+		    0,
+		    VK_FALSE,
+		    topLevelAS.accelerationStructure,
+		    VK_NULL_HANDLE,
+		    scratchBuffer.buffer,
+		    0);
 
 		vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
 
@@ -497,7 +515,8 @@ public:
 		instanceBuffer.destroy();
 	}
 
-	VkDeviceSize copyShaderIdentifier(uint8_t* data, const uint8_t* shaderHandleStorage, uint32_t groupIndex) const {
+	VkDeviceSize copyShaderIdentifier(uint8_t *data, const uint8_t *shaderHandleStorage, uint32_t groupIndex) const
+	{
 		const uint32_t shaderGroupHandleSize = rayTracingProperties.shaderGroupHandleSize;
 		memcpy(data, shaderHandleStorage + groupIndex * shaderGroupHandleSize, shaderGroupHandleSize);
 		return shaderGroupHandleSize;
@@ -506,20 +525,21 @@ public:
 	/*
 		Create the Shader Binding Table that binds the programs and top-level acceleration structure
 	*/
-	void createShaderBindingTable() {
+	void createShaderBindingTable()
+	{
 		// Create buffer for the shader binding table
 		const uint32_t sbtSize = rayTracingProperties.shaderGroupHandleSize * NUM_SHADER_GROUPS;
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-			&shaderBindingTable,
-			sbtSize));
+		    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		    &shaderBindingTable,
+		    sbtSize));
 		shaderBindingTable.map();
 
 		auto shaderHandleStorage = new uint8_t[sbtSize];
 		// Get shader identifiers
 		VK_CHECK_RESULT(vkGetRayTracingShaderGroupHandlesNV(device, pipeline, 0, NUM_SHADER_GROUPS, sbtSize, shaderHandleStorage));
-		auto* data = static_cast<uint8_t*>(shaderBindingTable.mapped);
+		auto *data = static_cast<uint8_t *>(shaderBindingTable.mapped);
 		// Copy the shader identifiers to the shader binding table
 		data += copyShaderIdentifier(data, shaderHandleStorage, INDEX_RAYGEN);
 		data += copyShaderIdentifier(data, shaderHandleStorage, INDEX_MISS);
@@ -533,13 +553,12 @@ public:
 	void createDescriptorSets()
 	{
 		std::vector<VkDescriptorPoolSize> poolSizes = {
-			{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV, 1 },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }
-        };
+		    {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV, 1},
+		    {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+		    {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+		    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+		    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+		    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
 		VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 1);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, nullptr, &descriptorPool));
 
@@ -547,47 +566,46 @@ public:
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
 
 		VkWriteDescriptorSetAccelerationStructureNV descriptorAccelerationStructureInfo{};
-		descriptorAccelerationStructureInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_NV;
+		descriptorAccelerationStructureInfo.sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_NV;
 		descriptorAccelerationStructureInfo.accelerationStructureCount = 1;
-		descriptorAccelerationStructureInfo.pAccelerationStructures = &topLevelAS.accelerationStructure;
+		descriptorAccelerationStructureInfo.pAccelerationStructures    = &topLevelAS.accelerationStructure;
 
 		VkWriteDescriptorSet accelerationStructureWrite{};
 		accelerationStructureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		// The specialized acceleration structure descriptor has to be chained
-		accelerationStructureWrite.pNext = &descriptorAccelerationStructureInfo;
-		accelerationStructureWrite.dstSet = descriptorSet;
-		accelerationStructureWrite.dstBinding = 0;
+		accelerationStructureWrite.pNext           = &descriptorAccelerationStructureInfo;
+		accelerationStructureWrite.dstSet          = descriptorSet;
+		accelerationStructureWrite.dstBinding      = 0;
 		accelerationStructureWrite.descriptorCount = 1;
-		accelerationStructureWrite.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+		accelerationStructureWrite.descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 
 		VkDescriptorImageInfo storageImageDescriptor{};
-		storageImageDescriptor.imageView = storageImage.view;
+		storageImageDescriptor.imageView   = storageImage.view;
 		storageImageDescriptor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        VkWriteDescriptorSet resultImageWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor);
+		VkWriteDescriptorSet resultImageWrite   = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor);
 		VkWriteDescriptorSet uniformBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, &ubo.descriptor);
 
-        VkDescriptorBufferInfo bufferDescriptor = { deviceBuffer, 0, VK_WHOLE_SIZE };
-        VkWriteDescriptorSet storageBufferDescSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3, &bufferDescriptor);
+		VkDescriptorBufferInfo bufferDescriptor     = {deviceBuffer, 0, VK_WHOLE_SIZE};
+		VkWriteDescriptorSet   storageBufferDescSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3, &bufferDescriptor);
 
 		VkDescriptorBufferInfo vertexBufferDescriptor{};
-        vertexBufferDescriptor.buffer = vertexBuffer.buffer;
-        vertexBufferDescriptor.range = VK_WHOLE_SIZE;
+		vertexBufferDescriptor.buffer = vertexBuffer.buffer;
+		vertexBufferDescriptor.range  = VK_WHOLE_SIZE;
 
-        VkDescriptorBufferInfo indexBufferDescriptor{};
-        indexBufferDescriptor.buffer = indexBuffer.buffer;
-        indexBufferDescriptor.range = VK_WHOLE_SIZE;
-        VkWriteDescriptorSet vertexBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, &vertexBufferDescriptor);
-        VkWriteDescriptorSet indexBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, &indexBufferDescriptor);
+		VkDescriptorBufferInfo indexBufferDescriptor{};
+		indexBufferDescriptor.buffer           = indexBuffer.buffer;
+		indexBufferDescriptor.range            = VK_WHOLE_SIZE;
+		VkWriteDescriptorSet vertexBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, &vertexBufferDescriptor);
+		VkWriteDescriptorSet indexBufferWrite  = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, &indexBufferDescriptor);
 
 		std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
-			accelerationStructureWrite,
-			resultImageWrite,
-			uniformBufferWrite,
-            storageBufferDescSet,
-            vertexBufferWrite,
-            indexBufferWrite
-		};
+		    accelerationStructureWrite,
+		    resultImageWrite,
+		    uniformBufferWrite,
+		    storageBufferDescSet,
+		    vertexBufferWrite,
+		    indexBufferWrite};
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
 	}
 
@@ -597,98 +615,97 @@ public:
 	void createRayTracingPipeline()
 	{
 		VkDescriptorSetLayoutBinding accelerationStructureLayoutBinding{};
-		accelerationStructureLayoutBinding.binding = 0;
-		accelerationStructureLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
+		accelerationStructureLayoutBinding.binding         = 0;
+		accelerationStructureLayoutBinding.descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 		accelerationStructureLayoutBinding.descriptorCount = 1;
-		accelerationStructureLayoutBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+		accelerationStructureLayoutBinding.stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 
 		VkDescriptorSetLayoutBinding resultImageLayoutBinding{};
-		resultImageLayoutBinding.binding = 1;
-		resultImageLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		resultImageLayoutBinding.binding         = 1;
+		resultImageLayoutBinding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		resultImageLayoutBinding.descriptorCount = 1;
-		resultImageLayoutBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+		resultImageLayoutBinding.stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 
 		VkDescriptorSetLayoutBinding uniformBufferBinding{};
-		uniformBufferBinding.binding = 2;
-		uniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		uniformBufferBinding.binding         = 2;
+		uniformBufferBinding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		uniformBufferBinding.descriptorCount = 1;
-		uniformBufferBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+		uniformBufferBinding.stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_NV;
 
 		VkDescriptorSetLayoutBinding storageBufferBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_NV, 3);
 
 		VkDescriptorSetLayoutBinding vertexBufferBinding{};
-        vertexBufferBinding.binding = 4;
-        vertexBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        vertexBufferBinding.descriptorCount = 1;
-        vertexBufferBinding.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+		vertexBufferBinding.binding         = 4;
+		vertexBufferBinding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		vertexBufferBinding.descriptorCount = 1;
+		vertexBufferBinding.stageFlags      = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
 
-        VkDescriptorSetLayoutBinding indexBufferBinding{};
-        indexBufferBinding.binding = 5;
-        indexBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        indexBufferBinding.descriptorCount = 1;
-        indexBufferBinding.stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
+		VkDescriptorSetLayoutBinding indexBufferBinding{};
+		indexBufferBinding.binding         = 5;
+		indexBufferBinding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		indexBufferBinding.descriptorCount = 1;
+		indexBufferBinding.stageFlags      = VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV;
 
-		std::vector<VkDescriptorSetLayoutBinding> bindings({
-			accelerationStructureLayoutBinding,
-			resultImageLayoutBinding,
-			uniformBufferBinding,
-            storageBufferBinding,
-            vertexBufferBinding,
-            indexBufferBinding
-			});
+		std::vector<VkDescriptorSetLayoutBinding> bindings({accelerationStructureLayoutBinding,
+		                                                    resultImageLayoutBinding,
+		                                                    uniformBufferBinding,
+		                                                    storageBufferBinding,
+		                                                    vertexBufferBinding,
+		                                                    indexBufferBinding});
 
 		VkDescriptorSetLayoutCreateInfo layoutInfo{};
-		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 		layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-		layoutInfo.pBindings = bindings.data();
+		layoutInfo.pBindings    = bindings.data();
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout));
 
 		VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
-		pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pipelineLayoutCreateInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 		pipelineLayoutCreateInfo.setLayoutCount = 1;
-		pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
+		pipelineLayoutCreateInfo.pSetLayouts    = &descriptorSetLayout;
 
 		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout));
 
-		const uint32_t shaderIndexRaygen = 0;
-		const uint32_t shaderIndexMiss = 1;
+		const uint32_t shaderIndexRaygen     = 0;
+		const uint32_t shaderIndexMiss       = 1;
 		const uint32_t shaderIndexClosestHit = 2;
 
 		std::array<VkPipelineShaderStageCreateInfo, 3> shaderStages{};
-		shaderStages[shaderIndexRaygen] = loadShader(getShadersPath() + "nv_ray_tracing_basic/raygen.rgen.spv", VK_SHADER_STAGE_RAYGEN_BIT_NV);
-		shaderStages[shaderIndexMiss] = loadShader(getShadersPath() + "nv_ray_tracing_basic/miss.rmiss.spv", VK_SHADER_STAGE_MISS_BIT_NV);
+		shaderStages[shaderIndexRaygen]     = loadShader(getShadersPath() + "nv_ray_tracing_basic/raygen.rgen.spv", VK_SHADER_STAGE_RAYGEN_BIT_NV);
+		shaderStages[shaderIndexMiss]       = loadShader(getShadersPath() + "nv_ray_tracing_basic/miss.rmiss.spv", VK_SHADER_STAGE_MISS_BIT_NV);
 		shaderStages[shaderIndexClosestHit] = loadShader(getShadersPath() + "nv_ray_tracing_basic/closesthit.rchit.spv", VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV);
 
 		/*
 			Setup ray tracing shader groups
 		*/
 		std::array<VkRayTracingShaderGroupCreateInfoNV, NUM_SHADER_GROUPS> groups{};
-		for (auto& group : groups) {
+		for (auto &group : groups)
+		{
 			// Init all groups with some default values
-			group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
-			group.generalShader = VK_SHADER_UNUSED_NV;
-			group.closestHitShader = VK_SHADER_UNUSED_NV;
-			group.anyHitShader = VK_SHADER_UNUSED_NV;
+			group.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_NV;
+			group.generalShader      = VK_SHADER_UNUSED_NV;
+			group.closestHitShader   = VK_SHADER_UNUSED_NV;
+			group.anyHitShader       = VK_SHADER_UNUSED_NV;
 			group.intersectionShader = VK_SHADER_UNUSED_NV;
 		}
 
 		// Links shaders and types to ray tracing shader groups
-		groups[INDEX_RAYGEN].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
-		groups[INDEX_RAYGEN].generalShader = shaderIndexRaygen;
-		groups[INDEX_MISS].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
-		groups[INDEX_MISS].generalShader = shaderIndexMiss;
-		groups[INDEX_CLOSEST_HIT].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
-		groups[INDEX_CLOSEST_HIT].generalShader = VK_SHADER_UNUSED_NV;
+		groups[INDEX_RAYGEN].type                  = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+		groups[INDEX_RAYGEN].generalShader         = shaderIndexRaygen;
+		groups[INDEX_MISS].type                    = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_NV;
+		groups[INDEX_MISS].generalShader           = shaderIndexMiss;
+		groups[INDEX_CLOSEST_HIT].type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_NV;
+		groups[INDEX_CLOSEST_HIT].generalShader    = VK_SHADER_UNUSED_NV;
 		groups[INDEX_CLOSEST_HIT].closestHitShader = shaderIndexClosestHit;
 
 		VkRayTracingPipelineCreateInfoNV rayPipelineInfo{};
-		rayPipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
-		rayPipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
-		rayPipelineInfo.pStages = shaderStages.data();
-		rayPipelineInfo.groupCount = static_cast<uint32_t>(groups.size());
-		rayPipelineInfo.pGroups = groups.data();
+		rayPipelineInfo.sType             = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_NV;
+		rayPipelineInfo.stageCount        = static_cast<uint32_t>(shaderStages.size());
+		rayPipelineInfo.pStages           = shaderStages.data();
+		rayPipelineInfo.groupCount        = static_cast<uint32_t>(groups.size());
+		rayPipelineInfo.pGroups           = groups.data();
 		rayPipelineInfo.maxRecursionDepth = 1;
-		rayPipelineInfo.layout = pipelineLayout;
+		rayPipelineInfo.layout            = pipelineLayout;
 		VK_CHECK_RESULT(vkCreateRayTracingPipelinesNV(device, VK_NULL_HANDLE, 1, &rayPipelineInfo, nullptr, &pipeline));
 	}
 
@@ -698,11 +715,11 @@ public:
 	void createUniformBuffer()
 	{
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&ubo,
-			sizeof(uniformData),
-			&uniformData));
+		    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		    &ubo,
+		    sizeof(uniformData),
+		    &uniformData));
 		VK_CHECK_RESULT(ubo.map());
 
 		updateUniformBuffers();
@@ -715,28 +732,28 @@ public:
 	{
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
-		VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		VkImageSubresourceRange subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
 		for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
 		{
 			VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
-//            // Barrier to ensure that input buffer transfer is finished before compute shader reads from it
-//            VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
-//            bufferBarrier.buffer = deviceBuffer;
-//            bufferBarrier.size = VK_WHOLE_SIZE;
-//            bufferBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-//            bufferBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-//            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-//            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-//
-//            vkCmdPipelineBarrier(
-//                drawCmdBuffers[i],
-//                VK_PIPELINE_STAGE_HOST_BIT,
-//                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-//                VK_FLAGS_NONE,
-//                0, nullptr,
-//                1, &bufferBarrier,
-//                0, nullptr);
+			//            // Barrier to ensure that input buffer transfer is finished before compute shader reads from it
+			//            VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
+			//            bufferBarrier.buffer = deviceBuffer;
+			//            bufferBarrier.size = VK_WHOLE_SIZE;
+			//            bufferBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			//            bufferBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			//            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			//            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			//
+			//            vkCmdPipelineBarrier(
+			//                drawCmdBuffers[i],
+			//                VK_PIPELINE_STAGE_HOST_BIT,
+			//                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			//                VK_FLAGS_NONE,
+			//                0, nullptr,
+			//                1, &bufferBarrier,
+			//                0, nullptr);
 
 			/*
 				Dispatch the ray tracing commands
@@ -746,16 +763,16 @@ public:
 
 			// Calculate shader binding offsets, which is pretty straight forward in our example
 			VkDeviceSize bindingOffsetRayGenShader = rayTracingProperties.shaderGroupHandleSize * INDEX_RAYGEN;
-			VkDeviceSize bindingOffsetMissShader = rayTracingProperties.shaderGroupHandleSize * INDEX_MISS;
-			VkDeviceSize bindingOffsetHitShader = rayTracingProperties.shaderGroupHandleSize * INDEX_CLOSEST_HIT;
-			VkDeviceSize bindingStride = rayTracingProperties.shaderGroupHandleSize;
+			VkDeviceSize bindingOffsetMissShader   = rayTracingProperties.shaderGroupHandleSize * INDEX_MISS;
+			VkDeviceSize bindingOffsetHitShader    = rayTracingProperties.shaderGroupHandleSize * INDEX_CLOSEST_HIT;
+			VkDeviceSize bindingStride             = rayTracingProperties.shaderGroupHandleSize;
 
 			vkCmdTraceRaysNV(drawCmdBuffers[i],
-				shaderBindingTable.buffer, bindingOffsetRayGenShader,
-				shaderBindingTable.buffer, bindingOffsetMissShader, bindingStride,
-				shaderBindingTable.buffer, bindingOffsetHitShader, bindingStride,
-				VK_NULL_HANDLE, 0, 0,
-				width, height, 1);
+			                 shaderBindingTable.buffer, bindingOffsetRayGenShader,
+			                 shaderBindingTable.buffer, bindingOffsetMissShader, bindingStride,
+			                 shaderBindingTable.buffer, bindingOffsetHitShader, bindingStride,
+			                 VK_NULL_HANDLE, 0, 0,
+			                 width, height, 1);
 
 			/*
 				Copy raytracing output to swap chain image
@@ -763,87 +780,87 @@ public:
 
 			// Prepare current swapchain image as transfer destination
 			vks::tools::setImageLayout(
-				drawCmdBuffers[i],
-				swapChain.images[i],
-				VK_IMAGE_LAYOUT_UNDEFINED,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				subresourceRange);
+			    drawCmdBuffers[i],
+			    swapChain.images[i],
+			    VK_IMAGE_LAYOUT_UNDEFINED,
+			    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			    subresourceRange);
 
 			// Prepare ray tracing output image as transfer source
 			vks::tools::setImageLayout(
-				drawCmdBuffers[i],
-				storageImage.image,
-				VK_IMAGE_LAYOUT_GENERAL,
-				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				subresourceRange);
+			    drawCmdBuffers[i],
+			    storageImage.image,
+			    VK_IMAGE_LAYOUT_GENERAL,
+			    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			    subresourceRange);
 
 			VkImageCopy copyRegion{};
-			copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-			copyRegion.srcOffset = { 0, 0, 0 };
-			copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-			copyRegion.dstOffset = { 0, 0, 0 };
-			copyRegion.extent = { width, height, 1 };
+			copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			copyRegion.srcOffset      = {0, 0, 0};
+			copyRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			copyRegion.dstOffset      = {0, 0, 0};
+			copyRegion.extent         = {width, height, 1};
 			vkCmdCopyImage(drawCmdBuffers[i], storageImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapChain.images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
 			// Transition swap chain image back for presentation
 			vks::tools::setImageLayout(
-				drawCmdBuffers[i],
-				swapChain.images[i],
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-				subresourceRange);
+			    drawCmdBuffers[i],
+			    swapChain.images[i],
+			    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+			    subresourceRange);
 
 			// Transition ray tracing output image back to general layout
 			vks::tools::setImageLayout(
-				drawCmdBuffers[i],
-				storageImage.image,
-				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				VK_IMAGE_LAYOUT_GENERAL,
-				subresourceRange);
+			    drawCmdBuffers[i],
+			    storageImage.image,
+			    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			    VK_IMAGE_LAYOUT_GENERAL,
+			    subresourceRange);
 
 			//@todo: Default render pass setup will overwrite contents
 			//vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 			//drawUI(drawCmdBuffers[i]);
 			//vkCmdEndRenderPass(drawCmdBuffers[i]);
 
-            // Barrier to ensure that shader writes are finished before buffer is read back from GPU
-            VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
-            bufferBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            bufferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            bufferBarrier.buffer = deviceBuffer;
-            bufferBarrier.size = VK_WHOLE_SIZE;
-            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			// Barrier to ensure that shader writes are finished before buffer is read back from GPU
+			VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
+			bufferBarrier.srcAccessMask         = VK_ACCESS_SHADER_WRITE_BIT;
+			bufferBarrier.dstAccessMask         = VK_ACCESS_TRANSFER_READ_BIT;
+			bufferBarrier.buffer                = deviceBuffer;
+			bufferBarrier.size                  = VK_WHOLE_SIZE;
+			bufferBarrier.srcQueueFamilyIndex   = VK_QUEUE_FAMILY_IGNORED;
+			bufferBarrier.dstQueueFamilyIndex   = VK_QUEUE_FAMILY_IGNORED;
 
-            vkCmdPipelineBarrier(
-                drawCmdBuffers[i],
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_FLAGS_NONE,
-                0, nullptr,
-                1, &bufferBarrier,
-                0, nullptr);
-            // Read back to host visible buffer
-            VkBufferCopy copyBufferRegion = {};
-            copyBufferRegion.size = width * height * sizeof(HitPy);
-            vkCmdCopyBuffer(drawCmdBuffers[i], deviceBuffer, hostBuffer, 1, &copyBufferRegion);
+			vkCmdPipelineBarrier(
+			    drawCmdBuffers[i],
+			    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			    VK_PIPELINE_STAGE_TRANSFER_BIT,
+			    VK_FLAGS_NONE,
+			    0, nullptr,
+			    1, &bufferBarrier,
+			    0, nullptr);
+			// Read back to host visible buffer
+			VkBufferCopy copyBufferRegion = {};
+			copyBufferRegion.size         = width * height * sizeof(HitPy);
+			vkCmdCopyBuffer(drawCmdBuffers[i], deviceBuffer, hostBuffer, 1, &copyBufferRegion);
 
-            // Barrier to ensure that buffer copy is finished before host reading from it
-            bufferBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            bufferBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-            bufferBarrier.buffer = hostBuffer;
-            bufferBarrier.size = VK_WHOLE_SIZE;
-            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			// Barrier to ensure that buffer copy is finished before host reading from it
+			bufferBarrier.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+			bufferBarrier.dstAccessMask       = VK_ACCESS_HOST_READ_BIT;
+			bufferBarrier.buffer              = hostBuffer;
+			bufferBarrier.size                = VK_WHOLE_SIZE;
+			bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
-            vkCmdPipelineBarrier(
-                drawCmdBuffers[i],
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_HOST_BIT,
-                VK_FLAGS_NONE,
-                0, nullptr,
-                1, &bufferBarrier,
-                0, nullptr);
+			vkCmdPipelineBarrier(
+			    drawCmdBuffers[i],
+			    VK_PIPELINE_STAGE_TRANSFER_BIT,
+			    VK_PIPELINE_STAGE_HOST_BIT,
+			    VK_FLAGS_NONE,
+			    0, nullptr,
+			    1, &bufferBarrier,
+			    0, nullptr);
 
 			VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
 		}
@@ -868,15 +885,15 @@ public:
 		vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProps2);
 
 		// Get VK_NV_ray_tracing related function pointers
-		vkCreateAccelerationStructureNV = reinterpret_cast<PFN_vkCreateAccelerationStructureNV>(vkGetDeviceProcAddr(device, "vkCreateAccelerationStructureNV"));
-		vkDestroyAccelerationStructureNV = reinterpret_cast<PFN_vkDestroyAccelerationStructureNV>(vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureNV"));
-		vkBindAccelerationStructureMemoryNV = reinterpret_cast<PFN_vkBindAccelerationStructureMemoryNV>(vkGetDeviceProcAddr(device, "vkBindAccelerationStructureMemoryNV"));
-		vkGetAccelerationStructureHandleNV = reinterpret_cast<PFN_vkGetAccelerationStructureHandleNV>(vkGetDeviceProcAddr(device, "vkGetAccelerationStructureHandleNV"));
+		vkCreateAccelerationStructureNV                = reinterpret_cast<PFN_vkCreateAccelerationStructureNV>(vkGetDeviceProcAddr(device, "vkCreateAccelerationStructureNV"));
+		vkDestroyAccelerationStructureNV               = reinterpret_cast<PFN_vkDestroyAccelerationStructureNV>(vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureNV"));
+		vkBindAccelerationStructureMemoryNV            = reinterpret_cast<PFN_vkBindAccelerationStructureMemoryNV>(vkGetDeviceProcAddr(device, "vkBindAccelerationStructureMemoryNV"));
+		vkGetAccelerationStructureHandleNV             = reinterpret_cast<PFN_vkGetAccelerationStructureHandleNV>(vkGetDeviceProcAddr(device, "vkGetAccelerationStructureHandleNV"));
 		vkGetAccelerationStructureMemoryRequirementsNV = reinterpret_cast<PFN_vkGetAccelerationStructureMemoryRequirementsNV>(vkGetDeviceProcAddr(device, "vkGetAccelerationStructureMemoryRequirementsNV"));
-		vkCmdBuildAccelerationStructureNV = reinterpret_cast<PFN_vkCmdBuildAccelerationStructureNV>(vkGetDeviceProcAddr(device, "vkCmdBuildAccelerationStructureNV"));
-		vkCreateRayTracingPipelinesNV = reinterpret_cast<PFN_vkCreateRayTracingPipelinesNV>(vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesNV"));
-		vkGetRayTracingShaderGroupHandlesNV = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesNV>(vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesNV"));
-		vkCmdTraceRaysNV = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
+		vkCmdBuildAccelerationStructureNV              = reinterpret_cast<PFN_vkCmdBuildAccelerationStructureNV>(vkGetDeviceProcAddr(device, "vkCmdBuildAccelerationStructureNV"));
+		vkCreateRayTracingPipelinesNV                  = reinterpret_cast<PFN_vkCreateRayTracingPipelinesNV>(vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesNV"));
+		vkGetRayTracingShaderGroupHandlesNV            = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesNV>(vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesNV"));
+		vkCmdTraceRaysNV                               = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
 		createScene();
 		createStorageImage();
@@ -893,31 +910,31 @@ public:
 
 	void draw()
 	{
-//		printf("%d\n", currentBuffer);
+		//		printf("%d\n", currentBuffer);
 		long start = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		VulkanExampleBase::prepareFrame();
 		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
+		submitInfo.pCommandBuffers    = &drawCmdBuffers[currentBuffer];
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
 		VulkanExampleBase::submitFrame();
 
 		// Make device writes visible to the host
-//		if (mapped == nullptr)
-//		{
-			size_t size = width * height * sizeof(HitPy);
-			vkMapMemory(device, hostMemory, 0, size, 0, &mapped);
-			VkMappedMemoryRange mappedRange = vks::initializers::mappedMemoryRange();
-			mappedRange.memory              = hostMemory;
-			mappedRange.offset              = 0;
-			mappedRange.size                = size;
-			vkInvalidateMappedMemoryRanges(device, 1, &mappedRange);
-//		}
+		//		if (mapped == nullptr)
+		//		{
+		size_t size = width * height * sizeof(HitPy);
+		vkMapMemory(device, hostMemory, 0, size, 0, &mapped);
+		VkMappedMemoryRange mappedRange = vks::initializers::mappedMemoryRange();
+		mappedRange.memory              = hostMemory;
+		mappedRange.offset              = 0;
+		mappedRange.size                = size;
+		vkInvalidateMappedMemoryRanges(device, 1, &mappedRange);
+		//		}
 
-		        std::vector<HitPy> computeOutput(width * height, HitPy{});
-        memcpy(computeOutput.data(), mapped, width * height * sizeof(HitPy));
-        // Copy to output
-//		HitPy *computeOutput = static_cast<HitPy *>(mapped);
-		int cnt = 0;
+		std::vector<HitPy> computeOutput(width * height, HitPy{});
+		memcpy(computeOutput.data(), mapped, width * height * sizeof(HitPy));
+		// Copy to output
+		//		HitPy *computeOutput = static_cast<HitPy *>(mapped);
+		int         cnt  = 0;
 		const auto &hit0 = computeOutput[0];
 		printf("hit0 valid: %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", hit0.valid, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
 		for (int i = 0; i < width * height; i++)
@@ -929,13 +946,13 @@ public:
 			}
 		}
 
-        vkUnmapMemory(device, hostMemory);
-        long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() - start;
+		vkUnmapMemory(device, hostMemory);
+		long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() - start;
 		printf("rays hit %d %ldmsec\n", cnt, time);
 		//		if (cnt > 0) {
 		//			const auto &iter = std::find_if(computeOutput.begin(), computeOutput.end(), [](const HitPy &hit) { return hit.valid; });
-//			printf("%f,%f,%f\n", iter->point[0], iter->point[1], iter->point[2]);
-//		}
+		//			printf("%f,%f,%f\n", iter->point[0], iter->point[1], iter->point[2]);
+		//		}
 	}
 
 	void render() final
