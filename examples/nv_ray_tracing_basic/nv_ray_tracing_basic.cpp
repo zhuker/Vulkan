@@ -7,6 +7,8 @@
 */
 
 #include "vulkanexamplebase.h"
+#include <map>
+#include <unordered_map>
 
 // Ray tracing acceleration structure
 struct AccelerationStructure
@@ -24,10 +26,10 @@ struct Vertex
 
 // clang-format off
 std::vector<Vertex> vertices1 = {
-    {{0.0f, 0.0f, -2.0f, 0.0f}},
-    {{0.0f, 1.0f, -2.0f, 0.0f}},
-    {{1.0f, 0.0f, -2.0f, 0.0f}},
-    {{1.0f, 1.0f, -2.0f, 0.0f}},
+    {{2.0f, 0.0f, -2.0f, 0.0f}},
+    {{2.0f, 1.0f, -2.0f, 0.0f}},
+    {{3.0f, 0.0f, -2.0f, 0.0f}},
+    {{3.0f, 1.0f, -2.0f, 0.0f}},
 };
 
 std::vector<Vertex> vertices2 = {
@@ -40,12 +42,14 @@ std::vector<Vertex> vertices2 = {
     {{-0.5f, -0.5f, -0.5f, 0.0f}},
     {{ 0.5f,  0.5f, -0.5f, 0.0f}},
 };
+
 std::vector<Vertex> vertices3 = {
     {{2.0f, 0.0f, -5.0f, 0.0f}},
     {{2.0f, 1.0f, -5.0f, 0.0f}},
     {{3.0f, 0.0f, -5.0f, 0.0f}},
     {{3.0f, 1.0f, -5.0f, 0.0f}},
 };
+
 // clang-format on
 
 std::vector<uint32_t> indices1 = {0, 1, 2, 2, 3, 0};
@@ -82,29 +86,35 @@ struct ObjModel
 // Instance of the OBJ
 struct ObjInstance
 {
-	uint32_t    objIndex{0};         // Reference to the `m_objModel`
 	glm::mat3x4 transform{1};        // Position of the instance
+};
+
+struct MyObj
+{
+	ObjModel              model{};
+	ObjInstance           instance{};
+	AccelerationStructure blas{};
+	VkGeometryNV          geom{};
 };
 
 class VulkanExample final : public VulkanExampleBase
 {
   public:
-	PFN_vkCreateAccelerationStructureNV                vkCreateAccelerationStructureNV;
-	PFN_vkDestroyAccelerationStructureNV               vkDestroyAccelerationStructureNV;
-	PFN_vkBindAccelerationStructureMemoryNV            vkBindAccelerationStructureMemoryNV;
-	PFN_vkGetAccelerationStructureHandleNV             vkGetAccelerationStructureHandleNV;
-	PFN_vkCmdBuildAccelerationStructureNV              vkCmdBuildAccelerationStructureNV;
-	PFN_vkGetAccelerationStructureMemoryRequirementsNV vkGetAccelerationStructureMemoryRequirementsNV;
-	PFN_vkCreateRayTracingPipelinesNV                  vkCreateRayTracingPipelinesNV;
-	PFN_vkGetRayTracingShaderGroupHandlesNV            vkGetRayTracingShaderGroupHandlesNV;
-	PFN_vkCmdTraceRaysNV                               vkCmdTraceRaysNV;
+	PFN_vkCreateAccelerationStructureNV                vkCreateAccelerationStructureNV{};
+	PFN_vkDestroyAccelerationStructureNV               vkDestroyAccelerationStructureNV{};
+	PFN_vkBindAccelerationStructureMemoryNV            vkBindAccelerationStructureMemoryNV{};
+	PFN_vkGetAccelerationStructureHandleNV             vkGetAccelerationStructureHandleNV{};
+	PFN_vkCmdBuildAccelerationStructureNV              vkCmdBuildAccelerationStructureNV{};
+	PFN_vkGetAccelerationStructureMemoryRequirementsNV vkGetAccelerationStructureMemoryRequirementsNV{};
+	PFN_vkCreateRayTracingPipelinesNV                  vkCreateRayTracingPipelinesNV{};
+	PFN_vkGetRayTracingShaderGroupHandlesNV            vkGetRayTracingShaderGroupHandlesNV{};
+	PFN_vkCmdTraceRaysNV                               vkCmdTraceRaysNV{};
 
 	VkPhysicalDeviceRayTracingPropertiesNV rayTracingProperties{};
-	std::vector<ObjModel>                  objects;
-	std::vector<ObjInstance>               instances;
 
-	std::vector<AccelerationStructure> bottomLevelASes;
-	AccelerationStructure              topLevelAS{};
+	std::map<uint32_t, MyObj> objects;
+
+	AccelerationStructure topLevelAS{};
 
 	vks::Buffer shaderBindingTable;
 
@@ -114,7 +124,7 @@ class VulkanExample final : public VulkanExampleBase
 		VkImage        image;
 		VkImageView    view;
 		VkFormat       format;
-	} storageImage;
+	} storageImage{};
 
 	struct UniformData
 	{
@@ -123,10 +133,10 @@ class VulkanExample final : public VulkanExampleBase
 	} uniformData;
 	vks::Buffer ubo;
 
-	VkPipeline            pipeline;
-	VkPipelineLayout      pipelineLayout;
-	VkDescriptorSet       descriptorSet;
-	VkDescriptorSetLayout descriptorSetLayout;
+	VkPipeline            pipeline{};
+	VkPipelineLayout      pipelineLayout{};
+	VkDescriptorSet       descriptorSet{};
+	VkDescriptorSetLayout descriptorSetLayout{};
 
 	VulkanExample() :
 	    VulkanExampleBase()
@@ -143,6 +153,14 @@ class VulkanExample final : public VulkanExampleBase
 		enabledDeviceExtensions.push_back(VK_NV_RAY_TRACING_EXTENSION_NAME);
 	}
 
+	void destroyObjectInternal(MyObj &obj)
+	{
+		vkFreeMemory(device, obj.blas.memory, nullptr);
+		vkDestroyAccelerationStructureNV(device, obj.blas.accelerationStructure, nullptr);
+		obj.model.vertexBuffer.destroy();
+		obj.model.indexBuffer.destroy();
+	}
+
 	~VulkanExample() final
 	{
 		vkDestroyPipeline(device, pipeline, nullptr);
@@ -151,17 +169,11 @@ class VulkanExample final : public VulkanExampleBase
 		vkDestroyImageView(device, storageImage.view, nullptr);
 		vkDestroyImage(device, storageImage.image, nullptr);
 		vkFreeMemory(device, storageImage.memory, nullptr);
-		for (auto &blas : bottomLevelASes)
-		{
-			vkFreeMemory(device, blas.memory, nullptr);
-			vkDestroyAccelerationStructureNV(device, blas.accelerationStructure, nullptr);
-		}
 		vkFreeMemory(device, topLevelAS.memory, nullptr);
 		vkDestroyAccelerationStructureNV(device, topLevelAS.accelerationStructure, nullptr);
 		for (auto &obj : objects)
 		{
-			obj.vertexBuffer.destroy();
-			obj.indexBuffer.destroy();
+			destroyObjectInternal(obj.second);
 		}
 		shaderBindingTable.destroy();
 		ubo.destroy();
@@ -256,7 +268,7 @@ class VulkanExample final : public VulkanExampleBase
 	/*
 		The top level acceleration structure contains the scene's object instances
 	*/
-	void createTopLevelAccelerationStructure(uint32_t instanceCount, bool update = false)
+	void createTopLevelAccelerationStructure(uint32_t instanceCount)
 	{
 		topLevelAS.buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_INFO_NV;
 		topLevelAS.buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_NV;
@@ -276,6 +288,7 @@ class VulkanExample final : public VulkanExampleBase
 
 		VkMemoryRequirements2 memoryRequirements2{};
 		vkGetAccelerationStructureMemoryRequirementsNV(device, &memoryRequirementsInfo, &memoryRequirements2);
+		printf("createTopLevelAccelerationStructure mem %ld\n", memoryRequirements2.memoryRequirements.size);
 
 		VkMemoryAllocateInfo memoryAllocateInfo = vks::initializers::memoryAllocateInfo();
 		memoryAllocateInfo.allocationSize       = memoryRequirements2.memoryRequirements.size;
@@ -334,15 +347,17 @@ class VulkanExample final : public VulkanExampleBase
 		memoryBarrier.dstAccessMask   = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV;
 		vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
 	}
-	GeometryInstance createGeometryInstance(const ObjInstance &instance) const
+
+	static GeometryInstance createGeometryInstance(const std::pair<uint32_t, MyObj> &obj)
 	{
+		printf("createGeometryInstance %d\n", obj.first);
 		GeometryInstance geometryInstance{};
-		geometryInstance.transform                   = instance.transform;
-		geometryInstance.instanceId                  = instance.objIndex;
+		geometryInstance.transform                   = obj.second.instance.transform;
+		geometryInstance.instanceId                  = obj.first;
 		geometryInstance.mask                        = 0xff;
 		geometryInstance.instanceOffset              = 0;
 		geometryInstance.flags                       = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
-		geometryInstance.accelerationStructureHandle = bottomLevelASes[instance.objIndex].handle;
+		geometryInstance.accelerationStructureHandle = obj.second.blas.handle;
 		return geometryInstance;
 	}
 
@@ -391,15 +406,15 @@ class VulkanExample final : public VulkanExampleBase
 
 	void buildBlas()
 	{
-		std::vector<VkGeometryNV> geoms;
-		std::transform(objects.begin(), objects.end(), std::back_inserter(geoms), [](const ObjModel &obj) {
-			return createVkGeometryNV(obj);
-		});
+		//		std::vector<VkGeometryNV> geoms;
+		//		std::transform(objects.begin(), objects.end(), std::back_inserter(geoms), [](const ObjModel &obj) {
+		//			return createVkGeometryNV(obj);
+		//		});
 
-		bottomLevelASes.resize(objects.size(), AccelerationStructure{});
-		for (size_t i = 0; i < geoms.size(); i++)
+		for (auto &p : objects)
 		{
-			createOrUpdateBlas(bottomLevelASes[i], geoms[i]);
+			printf("blas %d\n", p.first);
+			createOrUpdateBlas(p.second.blas, p.second.geom);
 		}
 	}
 
@@ -408,7 +423,7 @@ class VulkanExample final : public VulkanExampleBase
 		vks::Buffer instanceBuffer;
 
 		std::vector<GeometryInstance> geometryInstances;
-		std::transform(instances.begin(), instances.end(), std::back_inserter(geometryInstances), [this](const ObjInstance &obj) {
+		std::transform(objects.begin(), objects.end(), std::back_inserter(geometryInstances), [](const std::pair<uint32_t, MyObj> &obj) {
 			return createGeometryInstance(obj);
 		});
 
@@ -744,10 +759,9 @@ class VulkanExample final : public VulkanExampleBase
 		return model;
 	}
 
-	static ObjInstance createInstance(uint32_t objIndex, const glm::mat3x4 &transform = glm::mat3x4{1})
+	static ObjInstance createInstance(const glm::mat3x4 &transform = glm::mat3x4{1})
 	{
 		ObjInstance instance;
-		instance.objIndex  = objIndex;
 		instance.transform = transform;
 		return instance;
 	}
@@ -774,24 +788,8 @@ class VulkanExample final : public VulkanExampleBase
 		vkGetRayTracingShaderGroupHandlesNV            = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesNV>(vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesNV"));
 		vkCmdTraceRaysNV                               = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
-		objects.emplace_back(createObject(vertices1, indices1));
-		objects.emplace_back(createObject(vertices2, indices2));
-		instances.emplace_back(createInstance(0));
-		glm::mat3x4 t2 = {
-		    0.1f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    1.0f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    1.0f,
-		    0.0f,
-		};
-		instances.emplace_back(createInstance(1, t2));
+		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
 
 		createScene();
 		createStorageImage();
@@ -801,6 +799,15 @@ class VulkanExample final : public VulkanExampleBase
 		createDescriptorSets();
 		buildCommandBuffers();
 		prepared = true;
+	}
+
+	MyObj createMyObj(std::vector<Vertex> &vertices, std::vector<uint32_t> indices)
+	{
+		MyObj obj{};
+		obj.model    = createObject(vertices, indices);
+		obj.geom     = createVkGeometryNV(obj.model);
+		obj.instance = createInstance();
+		return obj;
 	}
 
 	uint32_t frameNumber = 0;
@@ -877,26 +884,40 @@ class VulkanExample final : public VulkanExampleBase
 			if (elapsed <= 5)
 			{
 				//update instance transform
-				vertices1[0].pos[0] += 0.1f;
-				printf("%f\n", vertices1[0].pos[0]);
+				vertices1[0].pos[2] -= 0.1f;
 				printf("%d %ld update instance transform\n", frameNumber, elapsed);
-				updateVertices(objects[0], vertices1);
-				auto updated_geom = createVkGeometryNV(objects[0]);
-				createOrUpdateBlas(bottomLevelASes[0], updated_geom, true);
-				//			instances[1].transform[0][0] += 0.01f;
-				//            instances[1].transform[1][1] += 0.01f;
+				auto &obj0 = objects.at(0);
+				updateVertices(obj0.model, vertices1);
+				obj0.geom = createVkGeometryNV(obj0.model);
+				createOrUpdateBlas(obj0.blas, obj0.geom, true);
+
+                auto &obj1 = objects.at(1);
+                obj1.instance.transform[0][0] += 0.01f;
+                obj1.instance.transform[1][1] += 0.01f;
 				buildTlas(true);
 			}
 			else
 			{
-				if (instances.size() < 3)
+				if (objects.find(2) == objects.end())
 				{
 					printf("create object\n");
-					objects.emplace_back(createObject(vertices3, indices3));
-					instances.emplace_back(createInstance(2));
-					auto geom = createVkGeometryNV(objects[2]);
-					bottomLevelASes.resize(objects.size(), AccelerationStructure{});
-					createOrUpdateBlas(bottomLevelASes[2], geom);
+					objects.emplace(std::make_pair(2, createMyObj(vertices3, indices3)));
+					auto &obj0 = objects.at(2);
+					createOrUpdateBlas(obj0.blas, obj0.geom);
+					buildTlas();
+					createDescriptorSets();
+					destroyCommandBuffers();
+					createCommandBuffers();
+					buildCommandBuffers();
+					vkDeviceWaitIdle(device);
+				}
+				if (elapsed == 10 && objects.find(1) != objects.end())
+				{
+					// delete
+					printf("delete object\n");
+					auto &obj = objects.at(1);
+					destroyObjectInternal(obj);
+					objects.erase(1);
 					buildTlas();
 					createDescriptorSets();
 					destroyCommandBuffers();
