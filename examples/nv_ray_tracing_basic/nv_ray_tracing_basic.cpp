@@ -38,11 +38,18 @@ std::vector<Vertex> vertices2 = {
     {{-0.5f, -0.5f, -0.5f, 0.0f}},
     {{ 0.5f,  0.5f, -0.5f, 0.0f}},
 };
+std::vector<Vertex> vertices3 = {
+    {{2.0f, 0.0f, -5.0f, 0.0f}},
+    {{2.0f, 1.0f, -5.0f, 0.0f}},
+    {{3.0f, 0.0f, -5.0f, 0.0f}},
+    {{3.0f, 1.0f, -5.0f, 0.0f}},
+};
 // clang-format on
 
 std::vector<uint32_t> indices1 = {0, 1, 2, 2, 3, 0};
 std::vector<uint32_t> indices2 = {0, 1, 3, 3, 1, 7, 2, 6, 0, 0, 6, 1, 4, 5, 2, 2, 5, 6,
                                   3, 7, 4, 4, 7, 5, 6, 5, 1, 1, 5, 7, 4, 2, 3, 3, 2, 0};
+std::vector<uint32_t> indices3 = {0, 1, 2, 2, 3, 0};
 
 // Ray tracing geometry instance
 struct GeometryInstance {
@@ -300,19 +307,17 @@ public:
 		return geometry;
 	}
 
-	VkDeviceSize getScratchSize(AccelerationStructure &as)
+	VkDeviceSize getScratchSize(AccelerationStructure &as, bool update = false)
 	{
 		// Estimate the amount of scratch memory required to build the BLAS, and update the
 		// size of the scratch buffer that will be allocated to sequentially build all BLASes
-		VkAccelerationStructureMemoryRequirementsInfoNV memoryRequirementsInfo{};
-		memoryRequirementsInfo.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV;
-		memoryRequirementsInfo.type                  = VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
+		VkAccelerationStructureMemoryRequirementsInfoNV memoryRequirementsInfo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_INFO_NV};
+		memoryRequirementsInfo.type                  = update ? VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_UPDATE_SCRATCH_NV : VK_ACCELERATION_STRUCTURE_MEMORY_REQUIREMENTS_TYPE_BUILD_SCRATCH_NV;
 		memoryRequirementsInfo.accelerationStructure = as.accelerationStructure;
 
-		VkMemoryRequirements2 reqMem{};
+		VkMemoryRequirements2 reqMem{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
 		vkGetAccelerationStructureMemoryRequirementsNV(device, &memoryRequirementsInfo, &reqMem);
-		VkDeviceSize scratchSize = reqMem.memoryRequirements.size;
-		return scratchSize;
+		return reqMem.memoryRequirements.size;
 	}
 
 	static void rwBarrier(VkCommandBuffer cmdBuffer)
@@ -341,7 +346,7 @@ public:
 		else
 			createBottomLevelAccelerationStructure(blas, &geom);
 
-		const auto  blasScratchSize = getScratchSize(blas);
+		const auto  blasScratchSize = getScratchSize(blas, update);
 		vks::Buffer scratchBuffer;
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 		    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
@@ -410,7 +415,7 @@ public:
 		if (!update)
     		createTopLevelAccelerationStructure(geometryInstances.size());
 
-		const auto  tlasScratchSize = getScratchSize(topLevelAS);
+		const auto  tlasScratchSize = getScratchSize(topLevelAS, update);
 		vks::Buffer scratchBuffer;
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 		    VK_BUFFER_USAGE_RAY_TRACING_BIT_NV,
@@ -728,21 +733,8 @@ public:
 		ObjModel model;
 		model.nbIndices  = static_cast<uint32_t>(indices.size());
 		model.nbVertices = static_cast<uint32_t>(vertices.size());
-
-		// Create buffers
-		// For the sake of simplicity we won't stage the vertex data to the gpu memory Vertex buffer
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-		    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		    &model.vertexBuffer,
-		    vertices.size() * sizeof(Vertex),
-		    vertices.data()));
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-		    VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		    &model.indexBuffer,
-		    indices.size() * sizeof(uint32_t),
-		    indices.data()));
+		updateVertices(model, vertices);
+		updateIndices(model, indices);
 		return model;
 	}
 
@@ -809,37 +801,97 @@ public:
 	void updateVertices(ObjModel &obj, std::vector<Vertex> &vertices)
 	{
 		obj.vertexBuffer.destroy();
+		vks::Buffer stagingBuffer;
+
+		auto bufferSize = vertices.size() * sizeof(Vertex);
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-		    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		    &obj.vertexBuffer,
-		    vertices.size() * sizeof(Vertex),
+		    &stagingBuffer,
+		    bufferSize,
 		    vertices.data()));
+
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+		    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		    &obj.vertexBuffer,
+		    bufferSize));
+
+		VkBufferCopy region{0, 0, bufferSize};
+		vulkanDevice->copyBuffer(&stagingBuffer, &obj.vertexBuffer, queue, &region);
+        stagingBuffer.destroy();
+	}
+
+	void updateIndices(ObjModel &obj, std::vector<uint32_t> &indices)
+	{
+		obj.indexBuffer.destroy();
+		vks::Buffer stagingBuffer;
+
+		auto bufferSize = indices.size() * sizeof(uint32_t);
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+		    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		    &stagingBuffer,
+		    bufferSize,
+		    indices.data()));
+
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+		    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		    &obj.indexBuffer,
+		    bufferSize));
+
+		VkBufferCopy region{0, 0, bufferSize};
+		vulkanDevice->copyBuffer(&stagingBuffer, &obj.indexBuffer, queue, &region);
+		stagingBuffer.destroy();
 	}
 
 	void draw()
 	{
 		VulkanExampleBase::prepareFrame();
 		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
+		submitInfo.pCommandBuffers    = &drawCmdBuffers[currentBuffer];
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
 		VulkanExampleBase::submitFrame();
 		frameNumber++;
-		int64_t sec  = current_time_msec() / 1000;
-		if (last_update_sec != sec) {
-            last_update_sec = sec;
-			auto elapsed = sec - start;
-			//update instance transform
-            vertices1[0].pos[2] -= 0.01f;
-            printf("%d %ld update instance transform\n", frameNumber, elapsed);
-			updateVertices(objects[0], vertices1);
-            auto updated_geom = createVkGeometryNV(objects[0]);
-			createOrUpdateBlas(bottomLevelASes[0], updated_geom, true);
+		int64_t sec = current_time_msec() / 1000;
+		if (last_update_sec != sec)
+		{
+			last_update_sec = sec;
+			auto elapsed    = sec - start;
+			if (elapsed <= 5)
+			{
+				//update instance transform
+				vertices1[0].pos[0] += 0.1f;
+				printf("%f\n", vertices1[0].pos[0]);
+				printf("%d %ld update instance transform\n", frameNumber, elapsed);
+				updateVertices(objects[0], vertices1);
+				auto updated_geom = createVkGeometryNV(objects[0]);
+				createOrUpdateBlas(bottomLevelASes[0], updated_geom, true);
+                //			instances[1].transform[0][0] += 0.01f;
+                //            instances[1].transform[1][1] += 0.01f;
+                buildTlas(true);
+			}
+			else
+			{
+				if (instances.size() < 3)
+				{
+					printf("create object\n");
+					objects.emplace_back(createObject(vertices3, indices3));
+					instances.emplace_back(createInstance(2));
+					auto geom = createVkGeometryNV(objects[2]);
+					bottomLevelASes.resize(objects.size(), AccelerationStructure{});
+					createOrUpdateBlas(bottomLevelASes[2], geom);
+					buildTlas();
+					createDescriptorSets();
+                    destroyCommandBuffers();
+                    createCommandBuffers();
+                    buildCommandBuffers();
+                    vkDeviceWaitIdle(device);
+				}
+			}
 
-			instances[1].transform[0][0] += 0.01f;
-            instances[1].transform[1][1] += 0.01f;
 
-			buildTlas(true);
 		}
 	}
 

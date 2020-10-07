@@ -88,8 +88,6 @@ private:
 	void createSynchronizationPrimitives();
 	void initSwapchain();
 	void setupSwapChain();
-	void createCommandBuffers();
-	void destroyCommandBuffers();
 	std::string shaderDir = "glsl";
 protected:
 	// Returns the path to the root of the glsl or hlsl shader directory.
@@ -153,7 +151,8 @@ protected:
 		VkSemaphore renderComplete;
 	} semaphores;
 	std::vector<VkFence> waitFences;
-public:
+void destroyCommandBuffers();
+void createCommandBuffers();public:
 	bool prepared = false;
 	bool resized = false;
 	uint32_t width = 1280;
