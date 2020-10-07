@@ -42,7 +42,7 @@ private:
 			matrices.view = transM * rotM;
 		}
 
-		viewPos = glm::vec4(position, 0.0f) * glm::vec4(-1.0f, 1.0f, -1.0f, 1.0f);
+//		viewPos = glm::vec4(position, 0.0f) * glm::vec4(-1.0f, 1.0f, -1.0f, 1.0f);
 
 		updated = true;
 	};
@@ -52,7 +52,7 @@ public:
 
 	glm::vec3 rotation = glm::vec3();
 	glm::vec3 position = glm::vec3();
-	glm::vec4 viewPos = glm::vec4();
+//	glm::vec4 viewPos = glm::vec4();
 
 	float rotationSpeed = 1.0f;
 	float movementSpeed = 1.0f;
@@ -111,6 +111,36 @@ public:
 		this->position = position;
 		updateViewMatrix();
 	}
+
+	static glm::mat4x4 look_at(const glm::vec3 &from, const glm::vec3 &to, const glm::vec3 &tmp = {0, 1, 0})
+	{
+		glm::vec3 forward = normalize(from - to);
+		glm::vec3 right   = cross(normalize(tmp), forward);
+		glm::vec3 up      = cross(forward, right);
+
+		glm::mat4x4 camToWorld;
+
+		camToWorld[0][0] = right.x;
+		camToWorld[0][1] = right.y;
+		camToWorld[0][2] = right.z;
+		camToWorld[1][0] = up.x;
+		camToWorld[1][1] = up.y;
+		camToWorld[1][2] = up.z;
+		camToWorld[2][0] = forward.x;
+		camToWorld[2][1] = forward.y;
+		camToWorld[2][2] = forward.z;
+
+		camToWorld[3][0] = from.x;
+		camToWorld[3][1] = from.y;
+		camToWorld[3][2] = from.z;
+
+		return camToWorld;
+	}
+	void lookAt(const glm::vec3 &from, const glm::vec3 &to) {
+		position = from;
+        matrices.view = glm::inverse(look_at(from, to));
+//        viewPos = glm::vec4(position, 0.0f) * glm::vec4(-1.0f, 1.0f, -1.0f, 1.0f);
+    }
 
 	void setRotation(glm::vec3 rotation)
 	{

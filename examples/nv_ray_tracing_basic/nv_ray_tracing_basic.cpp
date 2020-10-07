@@ -26,10 +26,10 @@ struct Vertex
 
 // clang-format off
 std::vector<Vertex> vertices1 = {
-    {{2.0f, 0.0f, -2.0f, 0.0f}},
-    {{2.0f, 1.0f, -2.0f, 0.0f}},
-    {{3.0f, 0.0f, -2.0f, 0.0f}},
-    {{3.0f, 1.0f, -2.0f, 0.0f}},
+    {{0.0f, 0.0f, 0.0f, 0.0f}},
+    {{0.0f, 1.0f, 0.0f, 0.0f}},
+    {{1.0f, 0.0f, 0.0f, 0.0f}},
+    {{1.0f, 1.0f, 0.0f, 0.0f}},
 };
 
 std::vector<Vertex> vertices2 = {
@@ -144,9 +144,14 @@ class VulkanExample final : public VulkanExampleBase
 		title            = "VK_NV_ray_tracing";
 		settings.overlay = true;
 		camera.type      = Camera::CameraType::lookat;
-		camera.setPerspective(60.0f, (float) width / (float) height, 0.1f, 512.0f);
+		camera.setPerspective(60.0f, (float) width / (float) height, -0.1f, 512.0f);
 		camera.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
-		camera.setTranslation(glm::vec3(0.0f, 0.0f, -2.5f));
+//		camera.lookAt(glm::vec3(0.0,0.0,2.0f), glm::vec3(0.0, 0.0, -1.0));
+//        camera.lookAt(glm::vec3(0.5,0.5,-1.0), glm::vec3(0.0,0.0,1.0));
+//        RayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
+//        camera.lookAt(glm::vec3(0.0, 2.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+
+		camera.setTranslation(glm::vec3(0.0f, 0.0f, 2.0f) * -1.f);
 		// Enable instance and device extensions required to use VK_NV_ray_tracing
 		enabledInstanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 		enabledDeviceExtensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
@@ -789,7 +794,7 @@ class VulkanExample final : public VulkanExampleBase
 		vkCmdTraceRaysNV                               = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
 		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
+//		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
 
 		createScene();
 		createStorageImage();
@@ -868,6 +873,8 @@ class VulkanExample final : public VulkanExampleBase
 		stagingBuffer.destroy();
 	}
 
+	bool updates_enabled = false;
+
 	void draw()
 	{
 		VulkanExampleBase::prepareFrame();
@@ -877,7 +884,7 @@ class VulkanExample final : public VulkanExampleBase
 		VulkanExampleBase::submitFrame();
 		frameNumber++;
 		int64_t sec = current_time_msec() / 1000;
-		if (last_update_sec != sec)
+		if (updates_enabled && last_update_sec != sec)
 		{
 			last_update_sec = sec;
 			auto elapsed    = sec - start;
