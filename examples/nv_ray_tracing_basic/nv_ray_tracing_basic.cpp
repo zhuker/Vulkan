@@ -159,7 +159,6 @@ class VulkanExample final : public VulkanExampleBase
 	VulkanExample() :
 	    VulkanExampleBase()
 	{
-		auto sz          = sizeof(HitPy);
 		title            = "VK_NV_ray_tracing";
 		settings.overlay = true;
 		camera.type      = Camera::CameraType::lookat;
@@ -1034,26 +1033,31 @@ class VulkanExample final : public VulkanExampleBase
 		if (hostBuffer.mapped == nullptr)
 		{
 			hostBuffer.map(hostBuffer.size);
-			hostBuffer.invalidate(hostBuffer.size);        //Invalidate a memory range of the buffer to make it visible to the host
 		}
-		
+		hostBuffer.invalidate(hostBuffer.size);        //Invalidate a memory range of the buffer to make it visible to the host
+
 		//		std::vector<HitPy> computeOutput(width * height, HitPy{});
 		//		memcpy(computeOutput.data(), hostBuffer.mapped, hostBuffer.size);
 		// Copy to output
 		HitPy *     computeOutput = static_cast<HitPy *>(hostBuffer.mapped);
 		int         cnt           = 0;
 		const auto &hit0          = computeOutput[0];
-		printf("hit0 valid: %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", hit0.valid, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
+		printf("hit0 valid: %d lidar %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", hit0.valid, hit0.lidar_id, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
 		for (int i = 0; i < width * height; i++)
 		{
-			auto hit = &computeOutput[i];
+			auto hit      = &computeOutput[i];
+			hit->lidar_id = 1;
 			if (hit->valid)
 			{
 				cnt++;
 			}
 		}
 
+		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
 //		hostBuffer.unmap();
+		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
+		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
+
 		long time = current_time_msec() - start_frame;
 		printf("rays hit %d %ldmsec\n", cnt, time);
 		//		if (cnt > 0) {

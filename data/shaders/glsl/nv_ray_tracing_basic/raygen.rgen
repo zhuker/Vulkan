@@ -46,7 +46,10 @@ void main()
     const uint idx = gl_LaunchSizeNV.x * gl_LaunchIDNV.y + gl_LaunchIDNV.x;
 
     traceNV(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
+
     ololo.hits[idx] = hit;
+    ololo.hits[idx].lidar_id = gl_LaunchSizeNV.x;
+
     vec3 bary = vec3(1.0f - hit.bary_u - hit.bary_v, hit.bary_u, hit.bary_v);
     imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(bary, 0.0));
 }
