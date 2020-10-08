@@ -963,7 +963,7 @@ class VulkanExample final : public VulkanExampleBase
 		stagingBuffer.destroy();
 	}
 
-	bool     updates_enabled = true;
+	bool     updates_enabled = false;
 	uint32_t frameNumber     = 0;
 	int64_t  last_update_sec = -1;
 	int64_t  start           = current_time_msec() / 1000;
@@ -1041,8 +1041,7 @@ class VulkanExample final : public VulkanExampleBase
 		// Copy to output
 		HitPy *     computeOutput = static_cast<HitPy *>(hostBuffer.mapped);
 		int         cnt           = 0;
-		const auto &hit0          = computeOutput[0];
-		printf("hit0 valid: %d lidar %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", hit0.valid, hit0.lidar_id, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
+        HitPy hit0          = computeOutput[0];
 		for (int i = 0; i < width * height; i++)
 		{
 			auto hit      = &computeOutput[i];
@@ -1059,7 +1058,7 @@ class VulkanExample final : public VulkanExampleBase
 		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
 
 		long time = current_time_msec() - start_frame;
-		printf("rays hit %d %ldmsec\n", cnt, time);
+		printf("rays %d %ldmsec hit0 valid: %d lidar %d inst %d prim %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", cnt, time, hit0.valid, hit0.lidar_id, hit0.instID, hit0.primID, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
 		//		if (cnt > 0) {
 		//			const auto &iter = std::find_if(computeOutput.begin(), computeOutput.end(), [](const HitPy &hit) { return hit.valid; });
 		//			printf("%f,%f,%f\n", iter->point[0], iter->point[1], iter->point[2]);

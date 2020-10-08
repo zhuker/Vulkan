@@ -15,8 +15,8 @@ struct HitPy
     vec3 padding;// makes structure 64bytes in size
 };
 
-layout(binding = 4, set = 0, std140) buffer Vertices { vec4 v[]; } vertices;
-layout(binding = 5, set = 0) buffer Indices { uint i[]; } indices;
+layout(binding = 4, set = 0, std140) buffer Vertices { vec4 v[]; } vertices[];
+layout(binding = 5, set = 0) buffer Indices { uint i[]; } indices[];
 
 layout(location = 0) rayPayloadInNV HitPy hit;
 
@@ -41,10 +41,10 @@ void main()
     // Computing the normal at hit position
     //vec3 normal = v0.nrm * barycentrics.x + v1.nrm * barycentrics.y + v2.nrm * barycentrics.z;
 
-    const ivec3 index = ivec3(indices.i[3*gl_PrimitiveID], indices.i[3*gl_PrimitiveID + 1], indices.i[3*gl_PrimitiveID + 2]);
-    const vec3 v0 = vertices.v[index.x].xyz;
-    const vec3 v1 = vertices.v[index.y].xyz;
-    const vec3 v2 = vertices.v[index.z].xyz;
+    const ivec3 index = ivec3(indices[gl_InstanceID].i[3*gl_PrimitiveID], indices[gl_InstanceID].i[3*gl_PrimitiveID + 1], indices[gl_InstanceID].i[3*gl_PrimitiveID + 2]);
+    const vec3 v0 = vertices[gl_InstanceID].v[index.x].xyz;
+    const vec3 v1 = vertices[gl_InstanceID].v[index.y].xyz;
+    const vec3 v2 = vertices[gl_InstanceID].v[index.z].xyz;
     const vec3 crs = cross((v1 - v0), (v2 - v0));
     const vec3 nrm = normalize(crs);
     const vec3 barycentrics = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
