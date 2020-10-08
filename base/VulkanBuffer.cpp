@@ -118,7 +118,7 @@ namespace vks
 		return vkInvalidateMappedMemoryRanges(device, 1, &mappedRange);
 	}
 
-	/** 
+	/**
 	* Release all Vulkan resources held by this buffer
 	*/
 	void Buffer::destroy()
@@ -126,10 +126,12 @@ namespace vks
 		if (buffer)
 		{
 			vkDestroyBuffer(device, buffer, nullptr);
+		    buffer = VK_NULL_HANDLE;
 		}
 		if (memory)
 		{
 			vkFreeMemory(device, memory, nullptr);
+            memory = VK_NULL_HANDLE;
 		}
 	}
 };

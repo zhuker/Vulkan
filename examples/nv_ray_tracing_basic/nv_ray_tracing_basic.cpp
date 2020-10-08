@@ -8,8 +8,11 @@
 
 #include "vulkanexamplebase.h"
 #include <map>
-#include <unordered_map>
 
+static int64_t current_time_msec()
+{
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 // Ray tracing acceleration structure
 struct AccelerationStructure
 {
@@ -67,6 +70,19 @@ struct GeometryInstance
 	uint32_t    flags : 8;
 	uint64_t    accelerationStructureHandle;
 };
+struct HitPy
+{
+	glm::vec3 point;           // The point in 3D space that the ray hit.
+	uint      valid;           // true is ray hit a vertex
+	glm::vec3 normal;          // The normalized geometry normal
+	float     distance;        // The distance measured from the ray origin to this hit.
+	float     bary_u;          // The u component of barycentric coordinate of this hit.
+	float     bary_v;          // The v component of barycentric coordinate of this hit.
+	uint      instID;          // The instance ID of the object in the scene
+	uint      primID;          // The index of the primitive of the mesh hit
+	uint      lidar_id;        // The lidar id of the ray
+	glm::vec3 padding;         // makes structure 64bytes in size
+};
 
 // Indices for the different ray tracing shader types used in this example
 #define INDEX_RAYGEN 0
@@ -79,8 +95,8 @@ struct ObjModel
 {
 	uint32_t    nbIndices{0};
 	uint32_t    nbVertices{0};
-	vks::Buffer vertexBuffer;        // Device buffer of all 'Vertex'
-	vks::Buffer indexBuffer;         // Device buffer of the indices forming triangles
+	vks::Buffer vertexBuffer{};        // Device buffer of all 'Vertex'
+	vks::Buffer indexBuffer{};         // Device buffer of the indices forming triangles
 };
 
 // Instance of the OBJ
@@ -126,12 +142,14 @@ class VulkanExample final : public VulkanExampleBase
 		VkFormat       format;
 	} storageImage{};
 
+	vks::Buffer deviceBuffer{}, hostBuffer{};
+
 	struct UniformData
 	{
 		glm::mat4 viewInverse;
 		glm::mat4 projInverse;
 	} uniformData;
-	vks::Buffer ubo;
+	vks::Buffer ubo{};
 
 	VkPipeline            pipeline{};
 	VkPipelineLayout      pipelineLayout{};
@@ -141,15 +159,16 @@ class VulkanExample final : public VulkanExampleBase
 	VulkanExample() :
 	    VulkanExampleBase()
 	{
+		auto sz          = sizeof(HitPy);
 		title            = "VK_NV_ray_tracing";
 		settings.overlay = true;
 		camera.type      = Camera::CameraType::lookat;
-		camera.setPerspective(60.0f, (float) width / (float) height, -0.1f, 512.0f);
+		camera.setPerspective(60.0f, (float) width / (float) height, 0.1f, 512.0f);
 		camera.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
-//		camera.lookAt(glm::vec3(0.0,0.0,2.0f), glm::vec3(0.0, 0.0, -1.0));
-//        camera.lookAt(glm::vec3(0.5,0.5,-1.0), glm::vec3(0.0,0.0,1.0));
-//        RayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
-//        camera.lookAt(glm::vec3(0.0, 2.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+		//		camera.lookAt(glm::vec3(0.0,0.0,2.0f), glm::vec3(0.0, 0.0, -1.0));
+		//        camera.lookAt(glm::vec3(0.5,0.5,-1.0), glm::vec3(0.0,0.0,1.0));
+		//        RayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
+		//        camera.lookAt(glm::vec3(0.0, 2.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
 
 		camera.setTranslation(glm::vec3(0.0f, 0.0f, 2.0f) * -1.f);
 		// Enable instance and device extensions required to use VK_NV_ray_tracing
@@ -231,6 +250,28 @@ class VulkanExample final : public VulkanExampleBase
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 	}
 
+	void createStorageBuffer()
+	{
+		const VkDeviceSize bufferSize = width * height * sizeof(HitPy);
+
+		std::vector<HitPy> computeInput(width * height, HitPy{});
+
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+		    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+		    &hostBuffer,
+		    computeInput.size() * sizeof(HitPy),
+		    computeInput.data()));
+
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+		    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		    &deviceBuffer,
+		    bufferSize));
+
+		VkBufferCopy copyRegion = {0, 0, bufferSize};
+		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
+	}
 	/*
 		The bottom level acceleration structure contains the scene's geometry (vertices, triangles)
 	*/
@@ -411,11 +452,6 @@ class VulkanExample final : public VulkanExampleBase
 
 	void buildBlas()
 	{
-		//		std::vector<VkGeometryNV> geoms;
-		//		std::transform(objects.begin(), objects.end(), std::back_inserter(geoms), [](const ObjModel &obj) {
-		//			return createVkGeometryNV(obj);
-		//		});
-
 		for (auto &p : objects)
 		{
 			printf("blas %d\n", p.first);
@@ -528,7 +564,8 @@ class VulkanExample final : public VulkanExampleBase
 		std::vector<VkDescriptorPoolSize> poolSizes = {
 		    {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV, 1},
 		    {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-		    {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+		    {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+		    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, static_cast<uint32_t>(1 + objects.size() + objects.size())}};
 		VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 1);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, nullptr, &descriptorPool));
 
@@ -556,10 +593,30 @@ class VulkanExample final : public VulkanExampleBase
 		VkWriteDescriptorSet resultImageWrite   = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor);
 		VkWriteDescriptorSet uniformBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, &ubo.descriptor);
 
+		VkDescriptorBufferInfo bufferDescriptor     = {deviceBuffer.buffer, 0, VK_WHOLE_SIZE};
+		VkWriteDescriptorSet   storageBufferDescSet = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3, &bufferDescriptor);
+
+		std::vector<VkDescriptorBufferInfo> vertexBufferDescInfos{};
+		std::vector<VkDescriptorBufferInfo> indexBufferDescInfos{};
+
+		for (auto &obj : objects)
+		{
+			VkDescriptorBufferInfo vertexBufferDesc{obj.second.model.vertexBuffer.buffer, 0, VK_WHOLE_SIZE};
+			VkDescriptorBufferInfo indexBufferDesc{obj.second.model.indexBuffer.buffer, 0, VK_WHOLE_SIZE};
+			vertexBufferDescInfos.emplace_back(vertexBufferDesc);
+			indexBufferDescInfos.emplace_back(indexBufferDesc);
+		}
+
+		VkWriteDescriptorSet vertexBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, vertexBufferDescInfos.data(), vertexBufferDescInfos.size());
+		VkWriteDescriptorSet indexBufferWrite  = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, indexBufferDescInfos.data(), indexBufferDescInfos.size());
+
 		std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
 		    accelerationStructureWrite,
 		    resultImageWrite,
-		    uniformBufferWrite};
+		    uniformBufferWrite,
+		    storageBufferDescSet,
+		    vertexBufferWrite,
+		    indexBufferWrite};
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, VK_NULL_HANDLE);
 	}
 
@@ -568,27 +625,21 @@ class VulkanExample final : public VulkanExampleBase
 	*/
 	void createRayTracingPipeline()
 	{
-		VkDescriptorSetLayoutBinding accelerationStructureLayoutBinding{};
-		accelerationStructureLayoutBinding.binding         = 0;
-		accelerationStructureLayoutBinding.descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
-		accelerationStructureLayoutBinding.descriptorCount = 1;
-		accelerationStructureLayoutBinding.stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+		auto objectCount = static_cast<uint32_t>(objects.size());
 
-		VkDescriptorSetLayoutBinding resultImageLayoutBinding{};
-		resultImageLayoutBinding.binding         = 1;
-		resultImageLayoutBinding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		resultImageLayoutBinding.descriptorCount = 1;
-		resultImageLayoutBinding.stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_NV;
+		VkDescriptorSetLayoutBinding accelerationStructureLB{0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
+		VkDescriptorSetLayoutBinding resultImageLB{1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
+		VkDescriptorSetLayoutBinding uniformBufferLB{2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
+		VkDescriptorSetLayoutBinding storageBufferLB{3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
+		VkDescriptorSetLayoutBinding vertexBufferLB{4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, objectCount, VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV};
+		VkDescriptorSetLayoutBinding indexBufferLB{5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, objectCount, VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV};
 
-		VkDescriptorSetLayoutBinding uniformBufferBinding{};
-		uniformBufferBinding.binding         = 2;
-		uniformBufferBinding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		uniformBufferBinding.descriptorCount = 1;
-		uniformBufferBinding.stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_NV;
-
-		std::vector<VkDescriptorSetLayoutBinding> bindings({accelerationStructureLayoutBinding,
-		                                                    resultImageLayoutBinding,
-		                                                    uniformBufferBinding});
+		std::vector<VkDescriptorSetLayoutBinding> bindings({accelerationStructureLB,
+		                                                    resultImageLB,
+		                                                    uniformBufferLB,
+		                                                    storageBufferLB,
+		                                                    vertexBufferLB,
+		                                                    indexBufferLB});
 
 		VkDescriptorSetLayoutCreateInfo layoutInfo{};
 		layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -679,7 +730,7 @@ class VulkanExample final : public VulkanExampleBase
 				Dispatch the ray tracing commands
 			*/
 			vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, pipeline);
-			vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, pipelineLayout, 0, 1, &descriptorSet, 0, 0);
+			vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
 			// Calculate shader binding offsets, which is pretty straight forward in our example
 			VkDeviceSize bindingOffsetRayGenShader = rayTracingProperties.shaderGroupHandleSize * INDEX_RAYGEN;
@@ -794,11 +845,12 @@ class VulkanExample final : public VulkanExampleBase
 		vkCmdTraceRaysNV                               = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
 		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-//		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
+		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
 
 		createScene();
 		createStorageImage();
 		createUniformBuffer();
+		createStorageBuffer();
 		createRayTracingPipeline();
 		createShaderBindingTable();
 		createDescriptorSets();
@@ -815,19 +867,8 @@ class VulkanExample final : public VulkanExampleBase
 		return obj;
 	}
 
-	uint32_t frameNumber = 0;
-
-	static int64_t current_time_msec()
-	{
-		return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-	}
-
-	int64_t last_update_sec = -1;
-	int64_t start           = current_time_msec() / 1000;
-
 	void updateVertices(ObjModel &obj, std::vector<Vertex> &vertices)
 	{
-		obj.vertexBuffer.destroy();
 		vks::Buffer stagingBuffer;
 
 		auto bufferSize = vertices.size() * sizeof(Vertex);
@@ -838,11 +879,14 @@ class VulkanExample final : public VulkanExampleBase
 		    bufferSize,
 		    vertices.data()));
 
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-		    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		    &obj.vertexBuffer,
-		    bufferSize));
+		if (!obj.vertexBuffer.buffer)
+		{
+			VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			    &obj.vertexBuffer,
+			    bufferSize));
+		}
 
 		VkBufferCopy region{0, 0, bufferSize};
 		vulkanDevice->copyBuffer(&stagingBuffer, &obj.vertexBuffer, queue, &region);
@@ -851,7 +895,6 @@ class VulkanExample final : public VulkanExampleBase
 
 	void updateIndices(ObjModel &obj, std::vector<uint32_t> &indices)
 	{
-		obj.indexBuffer.destroy();
 		vks::Buffer stagingBuffer;
 
 		auto bufferSize = indices.size() * sizeof(uint32_t);
@@ -862,18 +905,23 @@ class VulkanExample final : public VulkanExampleBase
 		    bufferSize,
 		    indices.data()));
 
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-		    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		    &obj.indexBuffer,
-		    bufferSize));
-
+		if (!obj.indexBuffer.buffer)
+		{
+			VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			    &obj.indexBuffer,
+			    bufferSize));
+		}
 		VkBufferCopy region{0, 0, bufferSize};
 		vulkanDevice->copyBuffer(&stagingBuffer, &obj.indexBuffer, queue, &region);
 		stagingBuffer.destroy();
 	}
 
-	bool updates_enabled = false;
+	bool     updates_enabled = true;
+	uint32_t frameNumber     = 0;
+	int64_t  last_update_sec = -1;
+	int64_t  start           = current_time_msec() / 1000;
 
 	void draw()
 	{
@@ -898,9 +946,9 @@ class VulkanExample final : public VulkanExampleBase
 				obj0.geom = createVkGeometryNV(obj0.model);
 				createOrUpdateBlas(obj0.blas, obj0.geom, true);
 
-                auto &obj1 = objects.at(1);
-                obj1.instance.transform[0][0] += 0.01f;
-                obj1.instance.transform[1][1] += 0.01f;
+				auto &obj1 = objects.at(1);
+				obj1.instance.transform[0][0] += 0.01f;
+				obj1.instance.transform[1][1] += 0.01f;
 				buildTlas(true);
 			}
 			else
