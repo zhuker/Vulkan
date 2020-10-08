@@ -386,7 +386,7 @@ class VulkanExample final : public VulkanExampleBase
 		return reqMem.memoryRequirements.size;
 	}
 
-	static void rwBarrier(VkCommandBuffer cmdBuffer)
+	static void rwBarrierAS(VkCommandBuffer cmdBuffer)
 	{
 		VkMemoryBarrier memoryBarrier = vks::initializers::memoryBarrier();
 		memoryBarrier.srcAccessMask   = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV;
@@ -445,7 +445,7 @@ class VulkanExample final : public VulkanExampleBase
 			    0);
 		}
 
-		rwBarrier(cmdBuffer);
+		rwBarrierAS(cmdBuffer);
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 		scratchBuffer.destroy();
 	}
@@ -486,7 +486,7 @@ class VulkanExample final : public VulkanExampleBase
 		    &scratchBuffer,
 		    tlasScratchSize));
 		VkCommandBuffer cmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-		rwBarrier(cmdBuffer);
+		rwBarrierAS(cmdBuffer);
 
 		if (update)
 		{
@@ -793,6 +793,42 @@ class VulkanExample final : public VulkanExampleBase
 			//vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 			//drawUI(drawCmdBuffers[i]);
 			//vkCmdEndRenderPass(drawCmdBuffers[i]);
+			{
+				// Barrier to ensure that shader writes are finished before buffer is read back from GPU
+				VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
+				bufferBarrier.srcAccessMask         = VK_ACCESS_SHADER_WRITE_BIT;
+				bufferBarrier.dstAccessMask         = VK_ACCESS_TRANSFER_READ_BIT;
+				bufferBarrier.buffer                = deviceBuffer.buffer;
+				bufferBarrier.size                  = VK_WHOLE_SIZE;
+
+				vkCmdPipelineBarrier(
+				    drawCmdBuffers[i],
+				    VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+				    VK_PIPELINE_STAGE_TRANSFER_BIT,
+				    VK_FLAGS_NONE,
+				    0, nullptr,
+				    1, &bufferBarrier,
+				    0, nullptr);
+			}
+			// Read back to host visible buffer
+			VkBufferCopy copyBufferRegion = {0, 0, deviceBuffer.size};
+			vkCmdCopyBuffer(drawCmdBuffers[i], deviceBuffer.buffer, hostBuffer.buffer, 1, &copyBufferRegion);
+
+			// Barrier to ensure that buffer copy is finished before host reading from it
+			VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
+			bufferBarrier.srcAccessMask         = VK_ACCESS_TRANSFER_WRITE_BIT;
+			bufferBarrier.dstAccessMask         = VK_ACCESS_HOST_READ_BIT;
+			bufferBarrier.buffer                = hostBuffer.buffer;
+			bufferBarrier.size                  = VK_WHOLE_SIZE;
+
+			vkCmdPipelineBarrier(
+			    drawCmdBuffers[i],
+			    VK_PIPELINE_STAGE_TRANSFER_BIT,
+			    VK_PIPELINE_STAGE_HOST_BIT,
+			    VK_FLAGS_NONE,
+			    0, nullptr,
+			    1, &bufferBarrier,
+			    0, nullptr);
 
 			VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
 		}
@@ -935,6 +971,7 @@ class VulkanExample final : public VulkanExampleBase
 
 	void draw()
 	{
+		int64_t start_frame = current_time_msec();
 		VulkanExampleBase::prepareFrame();
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers    = &drawCmdBuffers[currentBuffer];
@@ -992,6 +1029,37 @@ class VulkanExample final : public VulkanExampleBase
 				}
 			}
 		}
+
+		// Make device writes visible to the host
+		if (hostBuffer.mapped == nullptr)
+		{
+			hostBuffer.map(hostBuffer.size);
+			hostBuffer.invalidate(hostBuffer.size);        //Invalidate a memory range of the buffer to make it visible to the host
+		}
+		
+		//		std::vector<HitPy> computeOutput(width * height, HitPy{});
+		//		memcpy(computeOutput.data(), hostBuffer.mapped, hostBuffer.size);
+		// Copy to output
+		HitPy *     computeOutput = static_cast<HitPy *>(hostBuffer.mapped);
+		int         cnt           = 0;
+		const auto &hit0          = computeOutput[0];
+		printf("hit0 valid: %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", hit0.valid, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
+		for (int i = 0; i < width * height; i++)
+		{
+			auto hit = &computeOutput[i];
+			if (hit->valid)
+			{
+				cnt++;
+			}
+		}
+
+//		hostBuffer.unmap();
+		long time = current_time_msec() - start_frame;
+		printf("rays hit %d %ldmsec\n", cnt, time);
+		//		if (cnt > 0) {
+		//			const auto &iter = std::find_if(computeOutput.begin(), computeOutput.end(), [](const HitPy &hit) { return hit.valid; });
+		//			printf("%f,%f,%f\n", iter->point[0], iter->point[1], iter->point[2]);
+		//		}
 	}
 
 	void render() final
