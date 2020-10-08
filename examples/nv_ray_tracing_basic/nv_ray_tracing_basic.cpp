@@ -963,7 +963,7 @@ class VulkanExample final : public VulkanExampleBase
 		stagingBuffer.destroy();
 	}
 
-	bool     updates_enabled = false;
+	bool     updates_enabled = true;
 	uint32_t frameNumber     = 0;
 	int64_t  last_update_sec = -1;
 	int64_t  start           = current_time_msec() / 1000;

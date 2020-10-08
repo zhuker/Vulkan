@@ -62,7 +62,7 @@ void main()
     hit.valid = 1;
     hit.normal = normal;
     hit.primID = gl_PrimitiveID;
-    hit.instID = gl_InstanceID;
+    hit.instID = gl_InstanceCustomIndexNV;
     hit.distance = gl_RayTmaxNV;
     hit.bary_u = attribs.x;
     hit.bary_v = attribs.y;
