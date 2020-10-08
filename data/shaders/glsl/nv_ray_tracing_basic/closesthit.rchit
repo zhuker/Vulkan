@@ -3,16 +3,16 @@
 #extension GL_EXT_nonuniform_qualifier : enable
 struct HitPy
 {
-    vec3 point;// The point in 3D space that the ray hit.
-    uint valid;// true is ray hit a vertex
-    vec3 normal;// The normalized geometry normal
+    vec4 point;// The point in 3D space that the ray hit.
+    vec4 normal;// The normalized geometry normal
+    uint valid;// true if ray hit a vertex
     float distance;// The distance measured from the ray origin to this hit.
     float bary_u;// The u component of barycentric coordinate of this hit.
     float bary_v;// The v component of barycentric coordinate of this hit.
     uint instID;// The instance ID of the object in the scene
     uint primID;// The index of the primitive of the mesh hit
     uint lidar_id;// The lidar id of the ray
-    vec3 padding;// makes structure 64bytes in size
+    uint padding;// makes structure 64bytes in size
 };
 
 layout(binding = 4, set = 0, std140) buffer Vertices { vec4 v[]; } vertices[];
@@ -60,12 +60,12 @@ void main()
     //    uint  lidar_id;// The lidar id of the ray
 
     hit.valid = 1;
-    hit.normal = normal;
+    hit.normal = vec4(normal.xyz, 0.0f);
     hit.primID = gl_PrimitiveID;
     hit.instID = gl_InstanceCustomIndexNV;
     hit.distance = gl_RayTmaxNV;
     hit.bary_u = attribs.x;
     hit.bary_v = attribs.y;
-    hit.point = gl_WorldRayOriginNV + gl_RayTmaxNV * gl_WorldRayDirectionNV;
+    hit.point = vec4(gl_WorldRayOriginNV + gl_RayTmaxNV * gl_WorldRayDirectionNV, 0.0f);
 
 }

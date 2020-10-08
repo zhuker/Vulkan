@@ -70,18 +70,42 @@ struct GeometryInstance
 	uint32_t    flags : 8;
 	uint64_t    accelerationStructureHandle;
 };
+
+//RayPy and HitPy have the same memory layout this is to use same buffer for input and output
+struct RayPy
+{
+	glm::vec4 origin{};           //point in HitPy
+	glm::vec4 direction{};        //normal in HitPy
+	uint      unused0{};
+	float     max_range_m = 120.0f;        //distance in HitPy
+	float     time        = 0.0f;          //bary_u in HitPy
+	float     unused1{};
+	uint      unused2{};
+	uint      unused3{};
+	uint      lidar_id = 0;        //lidar_id in HitPy
+	uint      padding{};           // makes structure 64bytes in size
+};
+
+static RayPy rayPy(const glm::vec3 origin, const glm::vec3 direction)
+{
+	RayPy r{};
+	r.origin    = {origin, 0.f};
+	r.direction = {direction, 0.0f};
+	return r;
+}
+
 struct HitPy
 {
-	glm::vec3 point;           // The point in 3D space that the ray hit.
-	uint      valid;           // true is ray hit a vertex
-	glm::vec3 normal;          // The normalized geometry normal
+	glm::vec4 point;           // The point in 3D space that the ray hit.
+	glm::vec4 normal;          // The normalized geometry normal
+	uint      valid;           // true if ray hit a vertex
 	float     distance;        // The distance measured from the ray origin to this hit.
 	float     bary_u;          // The u component of barycentric coordinate of this hit.
 	float     bary_v;          // The v component of barycentric coordinate of this hit.
 	uint      instID;          // The instance ID of the object in the scene
 	uint      primID;          // The index of the primitive of the mesh hit
 	uint      lidar_id;        // The lidar id of the ray
-	glm::vec3 padding;         // makes structure 64bytes in size
+	uint      padding;         // makes structure 64bytes in size
 };
 
 // Indices for the different ray tracing shader types used in this example
@@ -115,6 +139,8 @@ struct MyObj
 
 class VulkanExample final : public VulkanExampleBase
 {
+	using Vector3f = glm::vec3;
+
   public:
 	PFN_vkCreateAccelerationStructureNV                vkCreateAccelerationStructureNV{};
 	PFN_vkDestroyAccelerationStructureNV               vkDestroyAccelerationStructureNV{};
@@ -159,6 +185,9 @@ class VulkanExample final : public VulkanExampleBase
 	VulkanExample() :
 	    VulkanExampleBase()
 	{
+		assert(sizeof(HitPy) == 64);
+		assert(sizeof(RayPy) == 64);
+
 		title            = "VK_NV_ray_tracing";
 		settings.overlay = true;
 		camera.type      = Camera::CameraType::lookat;
@@ -249,17 +278,29 @@ class VulkanExample final : public VulkanExampleBase
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 	}
 
+	std::vector<RayPy> rays = {rayPy(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
+	                           rayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
+	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
+	                           rayPy(Vector3f(0.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
+	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
+	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
+	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 0.0, 1.0))};
+
 	void createStorageBuffer()
 	{
-		const VkDeviceSize bufferSize = width * height * sizeof(HitPy);
+		const VkDeviceSize bufferSize = width * height * sizeof(RayPy);
+		std::vector<RayPy> computeInput(width * height);
 
-		std::vector<HitPy> computeInput(width * height, HitPy{});
+		for (size_t i = 0; i < computeInput.size(); i++)
+		{
+			computeInput[i] = rays[i % rays.size()];
+		}
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 		    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
 		    &hostBuffer,
-		    computeInput.size() * sizeof(HitPy),
+		    computeInput.size() * sizeof(RayPy),
 		    computeInput.data()));
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
@@ -880,7 +921,7 @@ class VulkanExample final : public VulkanExampleBase
 		vkCmdTraceRaysNV                               = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
 		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
+		//		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
 
 		createScene();
 		createStorageImage();
@@ -963,7 +1004,7 @@ class VulkanExample final : public VulkanExampleBase
 		stagingBuffer.destroy();
 	}
 
-	bool     updates_enabled = true;
+	bool     updates_enabled = false;
 	uint32_t frameNumber     = 0;
 	int64_t  last_update_sec = -1;
 	int64_t  start           = current_time_msec() / 1000;
@@ -1039,21 +1080,22 @@ class VulkanExample final : public VulkanExampleBase
 		//		std::vector<HitPy> computeOutput(width * height, HitPy{});
 		//		memcpy(computeOutput.data(), hostBuffer.mapped, hostBuffer.size);
 		// Copy to output
-		HitPy *     computeOutput = static_cast<HitPy *>(hostBuffer.mapped);
-		int         cnt           = 0;
-        HitPy hit0          = computeOutput[0];
+		HitPy *computeOutput = static_cast<HitPy *>(hostBuffer.mapped);
+		RayPy *computeInput  = static_cast<RayPy *>(hostBuffer.mapped);
+		int    cnt           = 0;
+		HitPy  hit0          = computeOutput[0];
 		for (int i = 0; i < width * height; i++)
 		{
-			auto hit      = &computeOutput[i];
-			hit->lidar_id = 1;
+			auto hit = &computeOutput[i];
 			if (hit->valid)
-			{
 				cnt++;
-			}
+			auto   ray = &computeInput[i];
+			RayPy &r   = rays[i % rays.size()];
+			*ray       = r;
 		}
 
 		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
-//		hostBuffer.unmap();
+		                                          //		hostBuffer.unmap();
 		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
 		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
 

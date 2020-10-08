@@ -9,47 +9,56 @@ layout(binding = 2, set = 0) uniform CameraProperties
     mat4 projInverse;
 } cam;
 
+//RayPy and HitPy have the same memory layout this is to use same buffer for input and output
+struct RayPy
+{
+    vec4 origin;//point in HitPy
+    vec4 direction;//normal in HitPy
+    uint unused0;
+    float max_range_m;//distance in HitPy
+    float time;//bary_u in HitPy
+    float unused1;
+    uint unused2;
+    uint unused3;
+    uint lidar_id;//lidar_id in HitPy
+    uint padding;// makes structure 64bytes in size
+};
+
 struct HitPy
 {
-    vec3 point;// The point in 3D space that the ray hit.
-    uint valid;// true is ray hit a vertex
-    vec3 normal;// The normalized geometry normal
+    vec4 point;// The point in 3D space that the ray hit.
+    vec4 normal;// The normalized geometry normal
+    uint valid;// true if ray hit a vertex
     float distance;// The distance measured from the ray origin to this hit.
     float bary_u;// The u component of barycentric coordinate of this hit.
     float bary_v;// The v component of barycentric coordinate of this hit.
     uint instID;// The instance ID of the object in the scene
     uint primID;// The index of the primitive of the mesh hit
     uint lidar_id;// The lidar id of the ray
-    vec3 padding;// makes structure 64bytes in size
+    uint padding;// makes structure 64bytes in size
 };
 
-layout(binding = 3, set = 0, std140) buffer Pos {
-    HitPy hits[];
-} ololo;
+layout(binding = 3, set = 0, std140) buffer MyIn { RayPy rays[]; } gagaga;
+layout(binding = 3, set = 0, std140) buffer MyOut { HitPy hits[]; } ololo;
 
 layout(location = 0) rayPayloadNV HitPy hit;
 
 void main()
 {
-    const vec2 pixelCenter = vec2(gl_LaunchIDNV.xy) + vec2(0.5);
-    const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeNV.xy);
-    vec2 d = inUV * 2.0 - 1.0;
+    const uint idx = gl_LaunchSizeNV.x * gl_LaunchIDNV.y + gl_LaunchIDNV.x;
 
-    vec4 origin = cam.viewInverse * vec4(0, 0, 0, 1);
-    vec4 target = cam.projInverse * vec4(d.x, d.y, 1, 1);
-    vec4 direction = cam.viewInverse*vec4(normalize(target.xyz / target.w), 0);
+    vec4 origin = ololo.hits[idx].point;
+    vec4 direction = ololo.hits[idx].normal;
 
     uint rayFlags = gl_RayFlagsOpaqueNV;
     uint cullMask = 0xff;
     float tmin = 0.001;
-    float tmax = 10000.0;
-    const uint idx = gl_LaunchSizeNV.x * gl_LaunchIDNV.y + gl_LaunchIDNV.x;
+    float tmax = gagaga.rays[idx].max_range_m;
 
     traceNV(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
-
     ololo.hits[idx] = hit;
-    ololo.hits[idx].lidar_id = gl_LaunchSizeNV.x;
 
-    vec3 bary = vec3(1.0f - hit.bary_u - hit.bary_v, hit.bary_u, hit.bary_v);
+    //    vec3 bary = vec3(1.0f - hit.bary_u - hit.bary_v, hit.bary_u, hit.bary_v);
+    vec3 bary = vec3(hit.valid, hit.valid, hit.valid);
     imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(bary, 0.0));
 }
