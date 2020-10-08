@@ -887,6 +887,11 @@ class VulkanExample final : public VulkanExampleBase
 			    &obj.vertexBuffer,
 			    bufferSize));
 		}
+		else
+		{
+			//update only works if number of vertices did not change
+			assert(vertices.size() == obj.nbVertices);
+		}
 
 		VkBufferCopy region{0, 0, bufferSize};
 		vulkanDevice->copyBuffer(&stagingBuffer, &obj.vertexBuffer, queue, &region);
@@ -912,6 +917,11 @@ class VulkanExample final : public VulkanExampleBase
 			    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			    &obj.indexBuffer,
 			    bufferSize));
+		}
+		else
+		{
+			//update only works if number of indices did not change
+			assert(indices.size() == obj.nbIndices);
 		}
 		VkBufferCopy region{0, 0, bufferSize};
 		vulkanDevice->copyBuffer(&stagingBuffer, &obj.indexBuffer, queue, &region);
