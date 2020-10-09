@@ -121,25 +121,82 @@ struct HitPy
 	unsigned int lidar_id;        // The lidar id of the ray
 	bool         valid;
 };
+static std::string to_string(const Hit &hit)
+{
+	char str[256] = {0};
+	snprintf(str, 256, "{{%f, %f, %f}, {%f, %f, %f}, %f, %f, %f, 0, %d, %d, %d, %d}",
+	         hit.point.x, hit.point.y, hit.point.z,
+	         hit.normal.x, hit.normal.y, hit.normal.z,
+	         hit.distance,
+	         hit.bary_u, hit.bary_v,
+	         hit.instID, hit.primID,
+	         hit.lidar_id,
+	         hit.valid);
+	std::string res(str, strlen(str));
+	return res;
+}
 
-#define ASSERT_NEAR(expected, actual, epsilon) assert(abs(expected - actual) < epsilon)
+static std::string to_string(const HitPy &hit)
+{
+	char str[256] = {0};
+	snprintf(str, 256, "{{%f, %f, %f}, {%f, %f, %f}, %f, %f, %f, 0, %d, %d, %d, %d}",
+	         hit.point.x, hit.point.y, hit.point.z,
+	         hit.normal.x, hit.normal.y, hit.normal.z,
+	         hit.distance,
+	         hit.bary_u, hit.bary_v,
+	         hit.instID, hit.primID,
+	         hit.lidar_id,
+	         hit.valid);
+	std::string res(str, strlen(str));
+	return res;
+}
+
+static inline void ASSERT_NEAR(float expected, float actual, float epsilon)
+{
+	float absdiff = abs(expected - actual);
+	bool  ok      = absdiff < epsilon;
+	if (!ok)
+	{
+		printf("expected %f actual %f absdiff %f\n", expected, actual, absdiff);
+	}
+	assert(ok);
+}
 #define ASSERT_EQ(expected, actual) assert(expected == actual)
 
 static void assert_near(const HitPy &expected, const Hit &actual)
 {
-    const float eps = 0.00001f;
-    ASSERT_NEAR(expected.distance, actual.distance, eps);
-    ASSERT_NEAR(expected.point.x, actual.point.x, eps);
-    ASSERT_NEAR(expected.point.y, actual.point.y, eps);
-    ASSERT_NEAR(expected.point.z, actual.point.z, eps);
-    ASSERT_NEAR(expected.normal.x, actual.normal.x, eps);
-    ASSERT_NEAR(expected.normal.y, actual.normal.y, eps);
-    ASSERT_NEAR(expected.normal.z, actual.normal.z, eps);
-    ASSERT_NEAR(expected.bary_u, actual.bary_u, eps);
-    ASSERT_NEAR(expected.bary_v, actual.bary_v, eps);
-    ASSERT_EQ(expected.instID, actual.instID);
-    ASSERT_EQ(expected.primID, actual.primID);
-    ASSERT_EQ(expected.lidar_id, actual.lidar_id);
+	printf("e: %s\na: %s\n", to_string(expected).c_str(), to_string(actual).c_str());
+	const float eps = 0.00001f;
+	ASSERT_NEAR(expected.distance, actual.distance, eps);
+	ASSERT_NEAR(expected.point.x, actual.point.x, eps);
+	ASSERT_NEAR(expected.point.y, actual.point.y, eps);
+	ASSERT_NEAR(expected.point.z, actual.point.z, eps);
+	ASSERT_NEAR(expected.normal.x, actual.normal.x, eps);
+	ASSERT_NEAR(expected.normal.y, actual.normal.y, eps);
+	ASSERT_NEAR(expected.normal.z, actual.normal.z, eps);
+	ASSERT_NEAR(expected.bary_u, actual.bary_u, eps);
+	ASSERT_NEAR(expected.bary_v, actual.bary_v, eps);
+	ASSERT_EQ(expected.instID, actual.instID);
+	ASSERT_EQ(expected.primID, actual.primID);
+	ASSERT_EQ(expected.lidar_id, actual.lidar_id);
+}
+
+static void assert_near(const std::vector<HitPy> &expecteds, const std::vector<Hit> &actuals)
+{
+	for (size_t i = 0; i < expecteds.size(); i++)
+	{
+		const auto &expected = expecteds[i];
+		const auto &actual   = actuals[i];
+		printf("e: %s\n", to_string(expected).c_str());
+		printf("a: %s\n", to_string(actual).c_str());
+		printf("\n");
+	}
+	printf("\n");
+
+	for (size_t i = 0; i < actuals.size(); i++)
+	{
+		assert_near(expecteds[i], actuals[i]);
+	}
 }
 
 HitPy from_hit(Hit *pHit)
@@ -321,13 +378,13 @@ class VulkanExample final : public VulkanExampleBase
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 	}
 
-	std::vector<Ray> rays = {rayPy(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
-	                         rayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
-	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
-	                         rayPy(Vector3f(0.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
-	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
-	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
-	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 0.0, 1.0))};
+	std::vector<Ray> rays = {rayPy(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0,-1.0)),
+	                         rayPy(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0,-1.0, 0.0)),
+	                         rayPy(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+	                         rayPy(Vector3f(0.499999, 0.5,-1.0), Vector3f(0.0, 0.0, 1.0)),
+	                         rayPy(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+	                         rayPy(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
+	                         rayPy(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0))};
 
 	void createStorageBuffer()
 	{
@@ -604,7 +661,7 @@ class VulkanExample final : public VulkanExampleBase
 	void createScene()
 	{
 		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		//		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
+		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
 		buildBlas();
 		buildTlas();
 	}
@@ -1118,7 +1175,6 @@ class VulkanExample final : public VulkanExampleBase
 		int  cnt           = 0;
 		Hit  hit0          = computeOutput[0];
 
-		//test 1
 		std::vector<Hit> valid_hits{};
 		for (int i = 0; i < width * height; i++)
 		{
@@ -1127,21 +1183,13 @@ class VulkanExample final : public VulkanExampleBase
 				cnt++;
 			if (hit->valid && i < rays.size())
 			{
-				Hit valid = computeOutput[i];
-				valid_hits.push_back(valid);
+				valid_hits.push_back(computeOutput[i]);
 			}
 			auto ray = &computeInput[i];
 			*ray     = rays[i % rays.size()];
 		}
-		assert(2 == valid_hits.size());
 
-		// clang-format off
-        HitPy expected0 = {{0.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 2.0, 0.0, 0.0, ignore, 0, 0, 0, true};
-        HitPy expected1 = {{0.5, 0.5,-0.0}, {0.0, 0.0, -1.0}, 1.0, 0.5, 0.5, ignore, 0, 0, 0, true};
-		// clang-format on
-		assert_near(expected0, valid_hits[0]);
-        assert_near(expected1, valid_hits[1]);
-
+		test_add_two_objects(valid_hits);
 		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
 		                                          //		hostBuffer.unmap();
 		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
@@ -1160,6 +1208,38 @@ class VulkanExample final : public VulkanExampleBase
 		if (!prepared)
 			return;
 		draw();
+	}
+
+	void test_add_two_objects(const std::vector<Hit> &valid_hits)
+	{
+		//        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+		//        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
+		assert(7 == valid_hits.size());
+
+		// clang-format off
+        std::vector<HitPy> expecteds = {
+            {{0.000001f,0.0, 0.50}, {-0.0, 0.0, 1.0}, 1.5, 0.5, 0.000001f, ignore, 1, 11, 0, true},
+            {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 1.5, 0.5, 0.5, ignore, 1, 6, 0, true},
+            {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
+            {{0.500000, 0.5,-0.50}, { 0.0, 0.0,-1.0}, 0.5,-0.0, 1.0, ignore, 1, 9, 0, true},
+            {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
+            {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 0.5, 0.5, 0.5, ignore, 1, 6, 0, true},
+            {{0.000000, 0.0, 0.50}, { 0.0, 0.0, 1.0}, 0.5, 0.5, 0.5, ignore, 1, 10, 0, true},
+        };
+		// clang-format on
+		assert_near(expecteds, valid_hits);
+	}
+
+	void test_simple_trace(const std::vector<Hit> &valid_hits)
+	{
+		//		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+		assert(2 == valid_hits.size());
+		// clang-format off
+        HitPy expected0 = {{0.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 2.0, 0.0, 0.0, ignore, 0, 0, 0, true};
+        HitPy expected1 = {{0.5, 0.5,-0.0}, {0.0, 0.0, -1.0}, 1.0, 0.5, 0.5, ignore, 0, 0, 0, true};
+		// clang-format on
+		assert_near(expected0, valid_hits[0]);
+		assert_near(expected1, valid_hits[1]);
 	}
 };
 
