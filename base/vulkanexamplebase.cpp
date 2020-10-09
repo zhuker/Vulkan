@@ -8,9 +8,7 @@
 
 #include "vulkanexamplebase.h"
 
-std::vector<const char *> VulkanExampleBase::args;
-
-VkResult VulkanExampleBase::createInstance(bool enableValidation)
+VkResult VulkanExampleBase::createInstance()
 {
 	VkApplicationInfo appInfo = {};
 	appInfo.sType             = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -31,7 +29,7 @@ VkResult VulkanExampleBase::createInstance(bool enableValidation)
 		std::vector<VkExtensionProperties> extensions(extCount);
 		if (vkEnumerateInstanceExtensionProperties(nullptr, &extCount, &extensions.front()) == VK_SUCCESS)
 		{
-			for (VkExtensionProperties extension : extensions)
+			for (const auto &extension : extensions)
 			{
 				supportedInstanceExtensions.emplace_back(extension.extensionName);
 			}
@@ -52,8 +50,7 @@ VkResult VulkanExampleBase::createInstance(bool enableValidation)
 		}
 	}
 
-	VkInstanceCreateInfo instanceCreateInfo = {};
-	instanceCreateInfo.sType                = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+	VkInstanceCreateInfo instanceCreateInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
 	instanceCreateInfo.pNext                = nullptr;
 	instanceCreateInfo.pApplicationInfo     = &appInfo;
 	if (!instanceExtensions.empty())
@@ -64,21 +61,9 @@ VkResult VulkanExampleBase::createInstance(bool enableValidation)
 	return vkCreateInstance(&instanceCreateInfo, nullptr, &instance);
 }
 
-void VulkanExampleBase::renderFrame()
-{
-	VulkanExampleBase::prepareFrame();
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers    = &drawCmdBuffers[currentBuffer];
-	VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
-	VulkanExampleBase::submitFrame();
-}
-
 std::string VulkanExampleBase::getWindowTitle()
 {
-	std::string device(deviceProperties.deviceName);
-	std::string windowTitle;
-	windowTitle = title + " - " + device;
-	return windowTitle;
+	return title + " - " + deviceProperties.deviceName;
 }
 
 void VulkanExampleBase::createCommandBuffers()
@@ -114,10 +99,6 @@ void VulkanExampleBase::createPipelineCache()
 
 void VulkanExampleBase::prepare()
 {
-	if (vulkanDevice->enableDebugMarkers)
-	{
-		vks::debugmarker::setup(device);
-	}
 	initSwapchain();
 	createCommandPool();
 	setupSwapChain();
@@ -206,7 +187,7 @@ void VulkanExampleBase::submitFrame()
 	VK_CHECK_RESULT(vkQueueWaitIdle(queue));
 }
 
-VulkanExampleBase::VulkanExampleBase(bool enableValidation)
+VulkanExampleBase::VulkanExampleBase()
 {
 	// Check for a valid asset path
 	struct stat info;
@@ -216,45 +197,6 @@ VulkanExampleBase::VulkanExampleBase(bool enableValidation)
 		exit(-1);
 	}
 
-	char *numConvPtr;
-
-	// Parse command line arguments
-	for (size_t i = 0; i < args.size(); i++)
-	{
-		if ((args[i] == std::string("-w")) || (args[i] == std::string("-width")))
-		{
-			uint32_t w = strtol(args[i + 1], &numConvPtr, 10);
-			if (numConvPtr != args[i + 1])
-			{
-				width = w;
-			};
-		}
-		if ((args[i] == std::string("-h")) || (args[i] == std::string("-height")))
-		{
-			uint32_t h = strtol(args[i + 1], &numConvPtr, 10);
-			if (numConvPtr != args[i + 1])
-			{
-				height = h;
-			};
-		}
-		// Select between glsl and hlsl shaders
-		if ((args[i] == std::string("-s")) || (args[i] == std::string("--shaders")))
-		{
-			std::string type;
-			if (args.size() > i + 1)
-			{
-				type = args[i + 1];
-			}
-			if (type == "glsl" || type == "hlsl")
-			{
-				shaderDir = type;
-			}
-			else
-			{
-				std::cerr << args[i] << " must be one of 'glsl' or 'hlsl'" << std::endl;
-			}
-		}
-	}
 	initxcbConnection();
 }
 
@@ -301,106 +243,12 @@ VulkanExampleBase::~VulkanExampleBase()
 
 bool VulkanExampleBase::initVulkan()
 {
-	VkResult err;
-
 	// Vulkan instance
-	err = createInstance(false);
+	auto err = createInstance();
 	if (err)
-	{
 		vks::tools::exitFatal("Could not create Vulkan instance : \n" + vks::tools::errorString(err), err);
-		return false;
-	}
 
-	// Physical device
-	uint32_t gpuCount = 0;
-	// Get number of available physical devices
-	VK_CHECK_RESULT(vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr));
-	assert(gpuCount > 0);
-	// Enumerate devices
-	std::vector<VkPhysicalDevice> physicalDevices(gpuCount);
-	err = vkEnumeratePhysicalDevices(instance, &gpuCount, physicalDevices.data());
-	if (err)
-	{
-		vks::tools::exitFatal("Could not enumerate physical devices : \n" + vks::tools::errorString(err), err);
-		return false;
-	}
-
-	// GPU selection
-
-	// Select physical device to be used for the Vulkan example
-	// Defaults to the first device unless specified by command line
-	uint32_t selectedDevice = 0;
-
-	// GPU selection via command line argument
-	for (size_t i = 0; i < args.size(); i++)
-	{
-		// Select GPU
-		if ((args[i] == std::string("-g")) || (args[i] == std::string("-gpu")))
-		{
-			char *   endptr;
-			uint32_t index = strtol(args[i + 1], &endptr, 10);
-			if (endptr != args[i + 1])
-			{
-				if (index > gpuCount - 1)
-				{
-					std::cerr << "Selected device index " << index << " is out of range, reverting to device 0 (use -listgpus to show available Vulkan devices)"
-					          << "\n";
-				}
-				else
-				{
-					std::cout << "Selected Vulkan device " << index << "\n";
-					selectedDevice = index;
-				}
-			};
-			break;
-		}
-		// List available GPUs
-		if (args[i] == std::string("-listgpus"))
-		{
-			uint32_t gpuCount = 0;
-			VK_CHECK_RESULT(vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr));
-			if (gpuCount == 0)
-			{
-				std::cerr << "No Vulkan devices found!"
-				          << "\n";
-			}
-			else
-			{
-				// Enumerate devices
-				std::cout << "Available Vulkan devices"
-				          << "\n";
-				std::vector<VkPhysicalDevice> devices(gpuCount);
-				VK_CHECK_RESULT(vkEnumeratePhysicalDevices(instance, &gpuCount, devices.data()));
-				for (uint32_t j = 0; j < gpuCount; j++)
-				{
-					VkPhysicalDeviceProperties deviceProperties;
-					vkGetPhysicalDeviceProperties(devices[j], &deviceProperties);
-					std::cout << "Device [" << j << "] : " << deviceProperties.deviceName << std::endl;
-					std::cout << " Type: " << vks::tools::physicalDeviceTypeString(deviceProperties.deviceType) << "\n";
-					std::cout << " API: " << (deviceProperties.apiVersion >> 22) << "." << ((deviceProperties.apiVersion >> 12) & 0x3ff) << "." << (deviceProperties.apiVersion & 0xfff) << "\n";
-				}
-			}
-		}
-	}
-
-	physicalDevice = physicalDevices[selectedDevice];
-
-	// Store properties (including limits), features and memory properties of the physical device (so that examples can check against them)
-	vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
-	vkGetPhysicalDeviceFeatures(physicalDevice, &deviceFeatures);
-	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &deviceMemoryProperties);
-
-	// Vulkan device creation
-	// This is handled by a separate class that gets a logical device representation
-	// and encapsulates functions related to a device
-	vulkanDevice = new vks::VulkanDevice(physicalDevice);
-	VkResult res = vulkanDevice->createLogicalDevice(enabledFeatures, enabledDeviceExtensions, deviceCreatepNextChain);
-	if (res != VK_SUCCESS)
-	{
-		vks::tools::exitFatal("Could not create Vulkan device: \n" + vks::tools::errorString(res), res);
-		return false;
-	}
-	device = vulkanDevice->logicalDevice;
+	createDevice();
 
 	// Get a graphics queue from the device
 	vkGetDeviceQueue(device, vulkanDevice->queueFamilyIndices.graphics, 0, &queue);
@@ -432,6 +280,61 @@ bool VulkanExampleBase::initVulkan()
 
 	return true;
 }
+
+void VulkanExampleBase::createDevice()
+{
+	VkResult err;
+
+	// Vulkan instance
+	err = createInstance();
+	if (err)
+		vks::tools::exitFatal("Could not create Vulkan instance : \n" + vks::tools::errorString(err), err);
+
+	// Physical device
+	uint32_t gpuCount = 0;
+	// Get number of available physical devices
+	err = vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr);
+	if (err || gpuCount <= 0)
+		vks::tools::exitFatal("GPU not found : " + vks::tools::errorString(err), err);
+
+	// Enumerate devices
+	std::vector<VkPhysicalDevice> physicalDevices(gpuCount);
+	err = vkEnumeratePhysicalDevices(instance, &gpuCount, physicalDevices.data());
+	if (err)
+	{
+		vks::tools::exitFatal("Could not enumerate physical devices : \n" + vks::tools::errorString(err), err);
+	}
+
+	for (const auto &dev : physicalDevices)
+	{
+		VkPhysicalDeviceProperties props{};
+		vkGetPhysicalDeviceProperties(dev, &props);
+		std::cout << "Device : " << props.deviceName << std::endl;
+		std::cout << "  Type : " << vks::tools::physicalDeviceTypeString(props.deviceType) << "\n";
+		std::cout << "   API : " << (props.apiVersion >> 22) << "." << ((props.apiVersion >> 12) & 0x3ff) << "." << (props.apiVersion & 0xfff) << "\n";
+	}
+
+	// Select physical device to be used for the Vulkan example
+	// Defaults to the first device unless specified by command line
+	uint32_t selectedDevice = 0;
+
+	physicalDevice = physicalDevices[selectedDevice];
+
+	// Store properties (including limits), features and memory properties of the physical device (so that examples can check against them)
+	vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+	vkGetPhysicalDeviceFeatures(physicalDevice, &deviceFeatures);
+	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &deviceMemoryProperties);
+
+	// Vulkan device creation
+	// This is handled by a separate class that gets a logical device representation
+	// and encapsulates functions related to a device
+	vulkanDevice = new vks::VulkanDevice(physicalDevice);
+	err          = vulkanDevice->createLogicalDevice(enabledFeatures, enabledDeviceExtensions, deviceCreatepNextChain);
+	if (err != VK_SUCCESS)
+		vks::tools::exitFatal("Could not create Vulkan device: \n" + vks::tools::errorString(err), err);
+	device = vulkanDevice->logicalDevice;
+}
+
 static inline xcb_intern_atom_reply_t *intern_atom_helper(xcb_connection_t *conn, bool only_if_exists, const char *str)
 {
 	xcb_intern_atom_cookie_t cookie = xcb_intern_atom(conn, only_if_exists, strlen(str), str);
@@ -470,7 +373,7 @@ xcb_window_t VulkanExampleBase::setupWindow()
 
 	xcb_change_property(connection, XCB_PROP_MODE_REPLACE,
 	                    window, (*reply).atom, 4, 32, 1,
-	                    &(*atom_wm_delete_window).atom);
+                        &(*atom_wm_delete_window).atom);
 
 	std::string windowTitle = getWindowTitle();
 	xcb_change_property(connection, XCB_PROP_MODE_REPLACE,
@@ -553,9 +456,6 @@ void VulkanExampleBase::handleEvent(const xcb_generic_event_t *event)
 			break;
 	}
 }
-
-void VulkanExampleBase::buildCommandBuffers()
-{}
 
 void VulkanExampleBase::createSynchronizationPrimitives()
 {

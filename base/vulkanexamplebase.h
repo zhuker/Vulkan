@@ -37,7 +37,6 @@
 #include "vulkan/vulkan.h"
 
 #include "VulkanBuffer.h"
-#include "VulkanDebug.h"
 #include "VulkanDevice.h"
 #include "VulkanSwapChain.h"
 #include "VulkanTexture.h"
@@ -131,10 +130,6 @@ class VulkanExampleBase
 	/** @brief Encapsulated physical and logical vulkan device */
 	vks::VulkanDevice *vulkanDevice;
 
-	VkClearColorValue defaultClearColor = {{0.025f, 0.025f, 0.025f, 1.0f}};
-
-	static std::vector<const char *> args;
-
 	std::string title      = "Vulkan Example";
 	std::string name       = "vulkanExample";
 	uint32_t    apiVersion = VK_API_VERSION_1_0;
@@ -153,7 +148,7 @@ class VulkanExampleBase
 	xcb_window_t             window;
 	xcb_intern_atom_reply_t *atom_wm_delete_window;
 
-	VulkanExampleBase(bool enableValidation = false);
+	explicit VulkanExampleBase();
 	virtual ~VulkanExampleBase();
 	/** @brief Setup the vulkan instance, enable required extensions and connect to the physical device (GPU) */
 	bool initVulkan();
@@ -163,11 +158,9 @@ class VulkanExampleBase
 	void         handleEvent(const xcb_generic_event_t *event);
 
 	/** @brief (Virtual) Creates the application wide Vulkan instance */
-	virtual VkResult createInstance(bool enableValidation);
+	virtual VkResult createInstance();
 	/** @brief (Pure virtual) Render function to be implemented by the sample application */
 	virtual void render() = 0;
-	/** @brief (Virtual) Called when resources have been recreated that require a rebuild of the command buffers (e.g. frame buffer), to be implemented by the sample application */
-	virtual void buildCommandBuffers();
 	/** @brief (Virtual) Setup default depth and stencil views */
 	virtual void setupDepthStencil();
 	/** @brief (Virtual) Setup default framebuffers for all requested swapchain images */
@@ -188,30 +181,6 @@ class VulkanExampleBase
 	void prepareFrame();
 	/** @brief Presents the current image to the swap chain */
 	void submitFrame();
-	/** @brief (Virtual) Default image acquire + submission and command buffer submission function */
-	virtual void renderFrame();
+	void createDevice();
 };
 
-#define VULKAN_EXAMPLE_MAIN()                                    \
-	VulkanExample *vulkanExample;                                \
-	static void    handleEvent(const xcb_generic_event_t *event) \
-	{                                                            \
-		if (vulkanExample != NULL)                               \
-		{                                                        \
-			vulkanExample->handleEvent(event);                   \
-		}                                                        \
-	}                                                            \
-	int main(const int argc, const char *argv[])                 \
-	{                                                            \
-		for (size_t i = 0; i < argc; i++)                        \
-		{                                                        \
-			VulkanExample::args.push_back(argv[i]);              \
-		};                                                       \
-		vulkanExample = new VulkanExample();                     \
-		vulkanExample->initVulkan();                             \
-		vulkanExample->setupWindow();                            \
-		vulkanExample->prepare();                                \
-		vulkanExample->renderLoop();                             \
-		delete (vulkanExample);                                  \
-		return 0;                                                \
-	}

@@ -188,7 +188,7 @@ class VulkanExample final : public VulkanExampleBase
 		assert(sizeof(HitPy) == 64);
 		assert(sizeof(RayPy) == 64);
 
-		title            = "VK_NV_ray_tracing";
+		title = "VK_NV_ray_tracing";
 		// Enable instance and device extensions required to use VK_NV_ray_tracing
 		enabledInstanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 		enabledDeviceExtensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
@@ -550,6 +550,8 @@ class VulkanExample final : public VulkanExampleBase
 	*/
 	void createScene()
 	{
+		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+		//		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
 		buildBlas();
 		buildTlas();
 	}
@@ -744,7 +746,7 @@ class VulkanExample final : public VulkanExampleBase
 	/*
 		Command buffer generation
 	*/
-	void buildCommandBuffers() final
+	void buildCommandBuffers()
 	{
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
@@ -872,7 +874,7 @@ class VulkanExample final : public VulkanExampleBase
 		return model;
 	}
 
-	static ObjInstance createInstance(const glm::mat3x4 &transform = glm::mat3x4{1})
+	static ObjInstance createObjInstance(const glm::mat3x4 &transform = glm::mat3x4{1})
 	{
 		ObjInstance instance;
 		instance.transform = transform;
@@ -901,9 +903,6 @@ class VulkanExample final : public VulkanExampleBase
 		vkGetRayTracingShaderGroupHandlesNV            = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesNV>(vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesNV"));
 		vkCmdTraceRaysNV                               = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
-		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		//		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
-
 		createScene();
 		createStorageImage();
 		createUniformBuffer();
@@ -920,7 +919,7 @@ class VulkanExample final : public VulkanExampleBase
 		MyObj obj{};
 		obj.model    = createObject(vertices, indices);
 		obj.geom     = createVkGeometryNV(obj.model);
-		obj.instance = createInstance();
+		obj.instance = createObjInstance();
 		return obj;
 	}
 
@@ -1096,4 +1095,22 @@ class VulkanExample final : public VulkanExampleBase
 	}
 };
 
-VULKAN_EXAMPLE_MAIN()
+VulkanExample *vulkanExample;
+static void    handleEvent(const xcb_generic_event_t *event)
+{
+	if (vulkanExample != NULL)
+	{
+		vulkanExample->handleEvent(event);
+	}
+}
+
+int main(const int argc, const char *argv[])
+{
+	vulkanExample = new VulkanExample();
+	vulkanExample->initVulkan();
+	vulkanExample->setupWindow();
+	vulkanExample->prepare();
+	vulkanExample->renderLoop();
+	delete (vulkanExample);
+	return 0;
+}
