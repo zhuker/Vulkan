@@ -72,7 +72,7 @@ struct GeometryInstance
 };
 
 //RayPy and HitPy have the same memory layout this is to use same buffer for input and output
-struct RayPy
+struct Ray
 {
 	glm::vec4 origin{};           //point in HitPy
 	glm::vec4 direction{};        //normal in HitPy
@@ -86,15 +86,15 @@ struct RayPy
 	uint      padding{};           // makes structure 64bytes in size
 };
 
-static RayPy rayPy(const glm::vec3 origin, const glm::vec3 direction)
+static Ray rayPy(const glm::vec3 origin, const glm::vec3 direction)
 {
-	RayPy r{};
+	Ray r{};
 	r.origin    = {origin, 0.f};
 	r.direction = {direction, 0.0f};
 	return r;
 }
 
-struct HitPy
+struct Hit
 {
 	glm::vec4 point;           // The point in 3D space that the ray hit.
 	glm::vec4 normal;          // The normalized geometry normal
@@ -107,6 +107,58 @@ struct HitPy
 	uint      lidar_id;        // The lidar id of the ray
 	uint      padding;         // makes structure 64bytes in size
 };
+
+struct HitPy
+{
+	glm::vec3    point;           // The point in 3D space that the ray hit.
+	glm::vec3    normal;          // The normalized geometry normal
+	float        distance;        // The distance measured from the ray origin to this hit.
+	float        bary_u;          // The u component of barycentric coordinate of this hit.
+	float        bary_v;          // The v component of barycentric coordinate of this hit.
+	unsigned int geomID;          // The geometry ID of object in the scene (ignore for now)
+	unsigned int instID;          // The instance ID of the object in the scene
+	unsigned int primID;          // The index of the primitive of the mesh hit
+	unsigned int lidar_id;        // The lidar id of the ray
+	bool         valid;
+};
+
+#define ASSERT_NEAR(expected, actual, epsilon) assert(abs(expected - actual) < epsilon)
+#define ASSERT_EQ(expected, actual) assert(expected == actual)
+
+static void assert_near(const HitPy &expected, const Hit &actual)
+{
+    const float eps = 0.00001f;
+    ASSERT_NEAR(expected.distance, actual.distance, eps);
+    ASSERT_NEAR(expected.point.x, actual.point.x, eps);
+    ASSERT_NEAR(expected.point.y, actual.point.y, eps);
+    ASSERT_NEAR(expected.point.z, actual.point.z, eps);
+    ASSERT_NEAR(expected.normal.x, actual.normal.x, eps);
+    ASSERT_NEAR(expected.normal.y, actual.normal.y, eps);
+    ASSERT_NEAR(expected.normal.z, actual.normal.z, eps);
+    ASSERT_NEAR(expected.bary_u, actual.bary_u, eps);
+    ASSERT_NEAR(expected.bary_v, actual.bary_v, eps);
+    ASSERT_EQ(expected.instID, actual.instID);
+    ASSERT_EQ(expected.primID, actual.primID);
+    ASSERT_EQ(expected.lidar_id, actual.lidar_id);
+}
+
+HitPy from_hit(Hit *pHit)
+{
+	HitPy hit{};
+	if (pHit == nullptr)
+		return hit;
+	hit.point    = glm::vec3(pHit->point);
+	hit.normal   = glm::vec3(pHit->normal);
+	hit.distance = pHit->distance;
+	hit.bary_u   = pHit->bary_u;
+	hit.bary_v   = pHit->bary_v;
+	hit.geomID   = 0;
+	hit.primID   = pHit->primID;
+	hit.instID   = pHit->instID;
+	hit.valid    = pHit->valid;
+	hit.lidar_id = pHit->lidar_id;
+	return hit;
+}
 
 // Indices for the different ray tracing shader types used in this example
 #define INDEX_RAYGEN 0
@@ -137,6 +189,7 @@ struct MyObj
 	VkGeometryNV          geom{};
 };
 
+const int           ignore = 0;
 class VulkanExample final : public VulkanExampleBase
 {
 	using Vector3f = glm::vec3;
@@ -185,8 +238,8 @@ class VulkanExample final : public VulkanExampleBase
 	VulkanExample() :
 	    VulkanExampleBase()
 	{
-		assert(sizeof(HitPy) == 64);
-		assert(sizeof(RayPy) == 64);
+		assert(sizeof(Hit) == 64);
+		assert(sizeof(Ray) == 64);
 
 		title = "VK_NV_ray_tracing";
 		// Enable instance and device extensions required to use VK_NV_ray_tracing
@@ -268,18 +321,18 @@ class VulkanExample final : public VulkanExampleBase
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 	}
 
-	std::vector<RayPy> rays = {rayPy(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
-	                           rayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
-	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
-	                           rayPy(Vector3f(0.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
-	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
-	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
-	                           rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 0.0, 1.0))};
+	std::vector<Ray> rays = {rayPy(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
+	                         rayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
+	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
+	                         rayPy(Vector3f(0.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
+	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(1.0, 0.0, 0.0)),
+	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
+	                         rayPy(Vector3f(0.0, 0.0, 0.0), Vector3f(0.0, 0.0, 1.0))};
 
 	void createStorageBuffer()
 	{
-		const VkDeviceSize bufferSize = width * height * sizeof(RayPy);
-		std::vector<RayPy> computeInput(width * height);
+		const VkDeviceSize bufferSize = width * height * sizeof(Ray);
+		std::vector<Ray>   computeInput(width * height);
 
 		for (size_t i = 0; i < computeInput.size(); i++)
 		{
@@ -290,7 +343,7 @@ class VulkanExample final : public VulkanExampleBase
 		    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
 		    &hostBuffer,
-		    computeInput.size() * sizeof(RayPy),
+		    computeInput.size() * sizeof(Ray),
 		    computeInput.data()));
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
@@ -1060,19 +1113,34 @@ class VulkanExample final : public VulkanExampleBase
 		//		std::vector<HitPy> computeOutput(width * height, HitPy{});
 		//		memcpy(computeOutput.data(), hostBuffer.mapped, hostBuffer.size);
 		// Copy to output
-		HitPy *computeOutput = static_cast<HitPy *>(hostBuffer.mapped);
-		RayPy *computeInput  = static_cast<RayPy *>(hostBuffer.mapped);
-		int    cnt           = 0;
-		HitPy  hit0          = computeOutput[0];
+		Hit *computeOutput = static_cast<Hit *>(hostBuffer.mapped);
+		Ray *computeInput  = static_cast<Ray *>(hostBuffer.mapped);
+		int  cnt           = 0;
+		Hit  hit0          = computeOutput[0];
+
+		//test 1
+		std::vector<Hit> valid_hits{};
 		for (int i = 0; i < width * height; i++)
 		{
 			auto hit = &computeOutput[i];
 			if (hit->valid)
 				cnt++;
-			auto   ray = &computeInput[i];
-			RayPy &r   = rays[i % rays.size()];
-			*ray       = r;
+			if (hit->valid && i < rays.size())
+			{
+				Hit valid = computeOutput[i];
+				valid_hits.push_back(valid);
+			}
+			auto ray = &computeInput[i];
+			*ray     = rays[i % rays.size()];
 		}
+		assert(2 == valid_hits.size());
+
+		// clang-format off
+        HitPy expected0 = {{0.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 2.0, 0.0, 0.0, ignore, 0, 0, 0, true};
+        HitPy expected1 = {{0.5, 0.5,-0.0}, {0.0, 0.0, -1.0}, 1.0, 0.5, 0.5, ignore, 0, 0, 0, true};
+		// clang-format on
+		assert_near(expected0, valid_hits[0]);
+        assert_near(expected1, valid_hits[1]);
 
 		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
 		                                          //		hostBuffer.unmap();

@@ -49,6 +49,7 @@ void main()
 
     vec4 origin = ololo.hits[idx].point;
     vec4 direction = ololo.hits[idx].normal;
+    uint lidar_id = ololo.hits[idx].lidar_id;
 
     uint rayFlags = gl_RayFlagsOpaqueNV;
     uint cullMask = 0xff;
@@ -56,6 +57,7 @@ void main()
     float tmax = gagaga.rays[idx].max_range_m;
 
     traceNV(topLevelAS, rayFlags, cullMask, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
+    hit.lidar_id = lidar_id;
     ololo.hits[idx] = hit;
 
     //    vec3 bary = vec3(1.0f - hit.bary_u - hit.bary_v, hit.bary_u, hit.bary_v);
