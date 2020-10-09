@@ -461,7 +461,7 @@ public:
 			subpassDescription.pDepthStencilAttachment = &depthReference;
 
 			// Use subpass dependencies for layout transitions
-			std::array<VkSubpassDependency, 2> dependencies;
+			std::array<VkSubpassDependency, 2> dependencies{};
 
 			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
 			dependencies[0].dstSubpass = 0;
@@ -800,7 +800,7 @@ public:
 
 			// ppm binary pixel data
 			for (int32_t y = 0; y < height; y++) {
-				unsigned int *row = (unsigned int*)imagedata;
+				auto *row = (unsigned int*)imagedata;
 				for (int32_t x = 0; x < width; x++) {
 					if (colorSwizzle) {
 						file.write((char*)row + 2, 1);

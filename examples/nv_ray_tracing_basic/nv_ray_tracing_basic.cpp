@@ -189,16 +189,6 @@ class VulkanExample final : public VulkanExampleBase
 		assert(sizeof(RayPy) == 64);
 
 		title            = "VK_NV_ray_tracing";
-		settings.overlay = true;
-		camera.type      = Camera::CameraType::lookat;
-		camera.setPerspective(60.0f, (float) width / (float) height, 0.1f, 512.0f);
-		camera.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
-		//		camera.lookAt(glm::vec3(0.0,0.0,2.0f), glm::vec3(0.0, 0.0, -1.0));
-		//        camera.lookAt(glm::vec3(0.5,0.5,-1.0), glm::vec3(0.0,0.0,1.0));
-		//        RayPy(Vector3f(0.0, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
-		//        camera.lookAt(glm::vec3(0.0, 2.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
-
-		camera.setTranslation(glm::vec3(0.0f, 0.0f, 2.0f) * -1.f);
 		// Enable instance and device extensions required to use VK_NV_ray_tracing
 		enabledInstanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 		enabledDeviceExtensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
@@ -749,8 +739,6 @@ class VulkanExample final : public VulkanExampleBase
 		    sizeof(uniformData),
 		    &uniformData));
 		VK_CHECK_RESULT(ubo.map());
-
-		updateUniformBuffers();
 	}
 
 	/*
@@ -872,13 +860,6 @@ class VulkanExample final : public VulkanExampleBase
 
 			VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
 		}
-	}
-
-	void updateUniformBuffers()
-	{
-		uniformData.projInverse = glm::inverse(camera.matrices.perspective);
-		uniformData.viewInverse = glm::inverse(camera.matrices.view);
-		memcpy(ubo.mapped, &uniformData, sizeof(uniformData));
 	}
 
 	ObjModel createObject(std::vector<Vertex> &vertices, std::vector<uint32_t> &indices)
@@ -1112,8 +1093,6 @@ class VulkanExample final : public VulkanExampleBase
 		if (!prepared)
 			return;
 		draw();
-		if (camera.updated)
-			updateUniformBuffers();
 	}
 };
 

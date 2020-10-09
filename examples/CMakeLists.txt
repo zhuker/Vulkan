@@ -61,7 +61,9 @@ function(buildExamples)
 endfunction(buildExamples)
 
 set(EXAMPLES
+	computeheadless
 	nv_ray_tracing_basic
+	renderheadless
 )
 
 buildExamples()
