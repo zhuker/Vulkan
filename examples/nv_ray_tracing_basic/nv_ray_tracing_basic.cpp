@@ -42,7 +42,7 @@ static int64_t current_time_msec()
 static inline xcb_intern_atom_reply_t *intern_atom_helper(xcb_connection_t *conn, bool only_if_exists, const char *str)
 {
 	xcb_intern_atom_cookie_t cookie = xcb_intern_atom(conn, only_if_exists, strlen(str), str);
-	return xcb_intern_atom_reply(conn, cookie, NULL);
+	return xcb_intern_atom_reply(conn, cookie, nullptr);
 }
 
 // Ray tracing acceleration structure
@@ -280,6 +280,66 @@ struct MyObj
 
 const int ignore = 0;
 
+static void test_add_two_objects_and_transform1(const std::vector<Hit> &valid_hits)
+{
+	if (3 != valid_hits.size())
+	{
+		for (const auto &validhit : valid_hits)
+		{
+			printf("e: %s\n", to_string(validhit).c_str());
+		}
+
+		assert(3 == valid_hits.size());
+	}
+	//        glm::mat3x4 transform_ = {
+	//            0.1f, 0.0f, 0.0f, 0.0f,
+	//            0.0f, 0.1f, 0.0f, 0.0f,
+	//            0.0f, 0.0f, 0.1f, 0.0f};
+	//
+	//        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+	//        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2, transform_)));
+	// clang-format off
+    std::vector<HitPy> expecteds = {
+        {{0.000001f, 0.00,  0.05f},{-0.0, 0.0, 1.0}, 1.95f, 0.49999f, 0.00001f, ignore, 1, 11, 0, true},
+        {{0.000000,  0.05f, 0.00}, { 0.0, 1.0,-0.0}, 1.95f, 0.5, 0.5, ignore, 1, 6, 0, true},
+        {{0.500000,  0.50, -0.00}, { 0.0, 0.0,-1.0}, 1.00f, 0.5, 0.5, ignore, 0, 0, 0, true},
+    };
+	// clang-format on
+	assert_near(expecteds, valid_hits);
+}
+
+static void test_add_two_objects(const std::vector<Hit> &valid_hits)
+{
+	//        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+	//        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
+	assert(7 == valid_hits.size());
+
+	// clang-format off
+    std::vector<HitPy> expecteds = {
+        {{0.000001f,0.0, 0.50}, {-0.0, 0.0, 1.0}, 1.5, 0.5, 0.000001f, ignore, 1, 11, 0, true},
+        {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 1.5, 0.5, 0.5, ignore, 1, 6, 0, true},
+        {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
+        {{0.500000, 0.5,-0.50}, { 0.0, 0.0,-1.0}, 0.5,-0.0, 1.0, ignore, 1, 9, 0, true},
+        {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
+        {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 0.5, 0.5, 0.5, ignore, 1, 6, 0, true},
+        {{0.000000, 0.0, 0.50}, { 0.0, 0.0, 1.0}, 0.5, 0.5, 0.5, ignore, 1, 10, 0, true},
+    };
+	// clang-format on
+	assert_near(expecteds, valid_hits);
+}
+
+static void test_simple_trace(const std::vector<Hit> &valid_hits)
+{
+	//		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+	assert(2 == valid_hits.size());
+	// clang-format off
+    HitPy expected0 = {{0.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 2.0, 0.0, 0.0, ignore, 0, 0, 0, true};
+    HitPy expected1 = {{0.5, 0.5,-0.0}, {0.0, 0.0, -1.0}, 1.0, 0.5, 0.5, ignore, 0, 0, 0, true};
+	// clang-format on
+	assert_near(expected0, valid_hits[0]);
+	assert_near(expected1, valid_hits[1]);
+}
+
 class VulkanExample final
 {
 	std::string getWindowTitle()
@@ -287,9 +347,7 @@ class VulkanExample final
 		return title + " - " + deviceProperties.deviceName;
 	}
 
-	uint32_t destWidth{};
-	uint32_t destHeight{};
-	void     createPipelineCache()
+	void createPipelineCache()
 	{
 		VkPipelineCacheCreateInfo pipelineCacheCreateInfo = {};
 		pipelineCacheCreateInfo.sType                     = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -330,9 +388,6 @@ class VulkanExample final
 	{
 		return getAssetPath() + "shaders/" + shaderDir + "/";
 	}
-	// Frame counter to display fps
-	uint32_t                                                    frameCounter = 0;
-	std::chrono::time_point<std::chrono::high_resolution_clock> lastTimestamp;
 	// Vulkan instance, stores all per-application states
 	VkInstance               instance{};
 	std::vector<std::string> supportedInstanceExtensions;
@@ -407,9 +462,8 @@ class VulkanExample final
 		VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocateInfo, drawCmdBuffers.data()));
 	}
 
-	bool     prepared = false;
-	uint32_t width    = 1280;
-	uint32_t height   = 720;
+	uint32_t width  = 1280;
+	uint32_t height = 720;
 
 	/** @brief Encapsulated physical and logical vulkan device */
 	vks::VulkanDevice *vulkanDevice{};
@@ -442,7 +496,7 @@ class VulkanExample final
 		// even on failure. Callers need to use xcb_connection_has_error() to
 		// check for failure. When finished, use xcb_disconnect() to close the
 		// connection and free the structure.
-		connection = xcb_connect(NULL, &scr);
+		connection = xcb_connect(nullptr, &scr);
 		assert(connection);
 		if (xcb_connection_has_error(connection))
 		{
@@ -1642,73 +1696,6 @@ class VulkanExample final
 		//		}
 	}
 
-	void render()
-	{
-		if (!prepared)
-			return;
-		draw();
-	}
-
-	void test_add_two_objects_and_transform1(const std::vector<Hit> &valid_hits)
-	{
-		if (3 != valid_hits.size())
-		{
-			for (const auto &validhit : valid_hits)
-			{
-				printf("e: %s\n", to_string(validhit).c_str());
-			}
-
-			assert(3 == valid_hits.size());
-		}
-		//        glm::mat3x4 transform_ = {
-		//            0.1f, 0.0f, 0.0f, 0.0f,
-		//            0.0f, 0.1f, 0.0f, 0.0f,
-		//            0.0f, 0.0f, 0.1f, 0.0f};
-		//
-		//        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		//        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2, transform_)));
-		// clang-format off
-        std::vector<HitPy> expecteds = {
-            {{0.000001f, 0.00,  0.05f},{-0.0, 0.0, 1.0}, 1.95f, 0.49999f, 0.00001f, ignore, 1, 11, 0, true},
-            {{0.000000,  0.05f, 0.00}, { 0.0, 1.0,-0.0}, 1.95f, 0.5, 0.5, ignore, 1, 6, 0, true},
-            {{0.500000,  0.50, -0.00}, { 0.0, 0.0,-1.0}, 1.00f, 0.5, 0.5, ignore, 0, 0, 0, true},
-        };
-		// clang-format on
-		assert_near(expecteds, valid_hits);
-	}
-
-	void test_add_two_objects(const std::vector<Hit> &valid_hits)
-	{
-		//        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		//        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
-		assert(7 == valid_hits.size());
-
-		// clang-format off
-        std::vector<HitPy> expecteds = {
-            {{0.000001f,0.0, 0.50}, {-0.0, 0.0, 1.0}, 1.5, 0.5, 0.000001f, ignore, 1, 11, 0, true},
-            {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 1.5, 0.5, 0.5, ignore, 1, 6, 0, true},
-            {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
-            {{0.500000, 0.5,-0.50}, { 0.0, 0.0,-1.0}, 0.5,-0.0, 1.0, ignore, 1, 9, 0, true},
-            {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
-            {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 0.5, 0.5, 0.5, ignore, 1, 6, 0, true},
-            {{0.000000, 0.0, 0.50}, { 0.0, 0.0, 1.0}, 0.5, 0.5, 0.5, ignore, 1, 10, 0, true},
-        };
-		// clang-format on
-		assert_near(expecteds, valid_hits);
-	}
-
-	void test_simple_trace(const std::vector<Hit> &valid_hits)
-	{
-		//		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		assert(2 == valid_hits.size());
-		// clang-format off
-        HitPy expected0 = {{0.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 2.0, 0.0, 0.0, ignore, 0, 0, 0, true};
-        HitPy expected1 = {{0.5, 0.5,-0.0}, {0.0, 0.0, -1.0}, 1.0, 0.5, 0.5, ignore, 0, 0, 0, true};
-		// clang-format on
-		assert_near(expected0, valid_hits[0]);
-		assert_near(expected1, valid_hits[1]);
-	}
-
   public:
 	VulkanExample()
 	{
@@ -1771,6 +1758,7 @@ class VulkanExample final
 
 		return true;
 	}
+
 	xcb_window_t setupWindow()
 	{
 		uint32_t value_mask, value_list[32];
@@ -1807,7 +1795,7 @@ class VulkanExample final
 		std::string windowTitle = getWindowTitle();
 		xcb_change_property(connection, XCB_PROP_MODE_REPLACE,
 		                    window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8,
-                            windowTitle.size(), windowTitle.c_str());
+		                    windowTitle.size(), windowTitle.c_str());
 
 		free(reply);
 
@@ -1865,14 +1853,10 @@ class VulkanExample final
 		createShaderBindingTable();
 		createDescriptorSets();
 		buildCommandBuffers();
-		prepared = true;
 	}
 	/** @brief Entry point for the main render loop */
 	void renderLoop()
 	{
-		destWidth     = width;
-		destHeight    = height;
-		lastTimestamp = std::chrono::high_resolution_clock::now();
 		xcb_flush(connection);
 		while (!quit)
 		{
@@ -1883,16 +1867,7 @@ class VulkanExample final
 				handleEvent(event);
 				free(event);
 			}
-			render();
-			frameCounter++;
-			auto tEnd = std::chrono::high_resolution_clock::now();
-			// Convert to clamped timer value
-			float fpsTimer = std::chrono::duration<double, std::milli>(tEnd - lastTimestamp).count();
-			if (fpsTimer > 1000.0f)
-			{
-				frameCounter  = 0;
-				lastTimestamp = tEnd;
-			}
+			draw();
 		}
 		// Flush device to make sure all resources can be freed
 		if (device != VK_NULL_HANDLE)
@@ -1914,15 +1889,6 @@ class VulkanExample final
 			case XCB_DESTROY_NOTIFY:
 				quit = true;
 				break;
-			case XCB_CONFIGURE_NOTIFY: {
-				const auto *cfgEvent = (const xcb_configure_notify_event_t *) event;
-				if ((prepared) && ((cfgEvent->width != width) || (cfgEvent->height != height)))
-				{
-					destWidth  = cfgEvent->width;
-					destHeight = cfgEvent->height;
-				}
-			}
-			break;
 			default:
 				break;
 		}
@@ -1984,22 +1950,12 @@ class VulkanExample final
 	}
 };
 
-VulkanExample *vulkanExample;
-static void    handleEvent(const xcb_generic_event_t *event)
-{
-	if (vulkanExample != NULL)
-	{
-		vulkanExample->handleEvent(event);
-	}
-}
-
 int main(const int argc, const char *argv[])
 {
-	vulkanExample = new VulkanExample();
-	vulkanExample->initVulkan();
-	vulkanExample->setupWindow();
-	vulkanExample->prepare();
-	vulkanExample->renderLoop();
-	delete (vulkanExample);
+	VulkanExample vulkanExample{};
+	vulkanExample.initVulkan();
+	vulkanExample.setupWindow();
+	vulkanExample.prepare();
+	vulkanExample.renderLoop();
 	return 0;
 }
