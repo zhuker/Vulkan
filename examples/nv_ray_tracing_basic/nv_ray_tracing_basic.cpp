@@ -1696,28 +1696,6 @@ class VulkanExample final
 		//		}
 	}
 
-  public:
-	VulkanExample()
-	{
-		// Check for a valid asset path
-		struct stat info
-		{};
-		if (stat(getAssetPath().c_str(), &info) != 0)
-		{
-			std::cerr << "Error: Could not find asset path in " << getAssetPath() << "\n";
-			exit(-1);
-		}
-
-		initxcbConnection();
-
-		assert(sizeof(Hit) == 64);
-		assert(sizeof(Ray) == 64);
-
-		// Enable instance and device extensions required to use VK_NV_ray_tracing
-		enabledInstanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-		enabledDeviceExtensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
-		enabledDeviceExtensions.push_back(VK_NV_RAY_TRACING_EXTENSION_NAME);
-	}
 	/** @brief Setup the vulkan instance, enable required extensions and connect to the physical device (GPU) */
 	bool initVulkan()
 	{
@@ -1893,6 +1871,30 @@ class VulkanExample final
 				break;
 		}
 	}
+
+  public:
+	VulkanExample()
+	{
+		// Check for a valid asset path
+		struct stat info
+		{};
+		if (stat(getAssetPath().c_str(), &info) != 0)
+		{
+			std::cerr << "Error: Could not find asset path in " << getAssetPath() << "\n";
+			exit(-1);
+		}
+
+		initxcbConnection();
+
+		assert(sizeof(Hit) == 64);
+		assert(sizeof(Ray) == 64);
+
+		// Enable instance and device extensions required to use VK_NV_ray_tracing
+		enabledInstanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+		enabledDeviceExtensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
+		enabledDeviceExtensions.push_back(VK_NV_RAY_TRACING_EXTENSION_NAME);
+	}
+
 	~VulkanExample()
 	{
 		// Clean up Vulkan resources
@@ -1948,14 +1950,19 @@ class VulkanExample final
 		shaderBindingTable.destroy();
 		ubo.destroy();
 	}
+
+	void main()
+	{
+		initVulkan();
+		setupWindow();
+		prepare();
+		renderLoop();
+	}
 };
 
 int main(const int argc, const char *argv[])
 {
 	VulkanExample vulkanExample{};
-	vulkanExample.initVulkan();
-	vulkanExample.setupWindow();
-	vulkanExample.prepare();
-	vulkanExample.renderLoop();
+	vulkanExample.main();
 	return 0;
 }
