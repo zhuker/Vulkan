@@ -403,20 +403,13 @@ class VulkanExample : public VulkanExampleBase
 		// Single instance with a 3x4 transform matrix for the ray traced triangle
 		vks::Buffer instanceBuffer;
 
+		// clang-format off
 		glm::mat3x4 transform = {
-		    1.0f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    1.0f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    0.0f,
-		    1.0f,
-		    0.0f,
+		    1.0f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, 0.0f,
 		};
+        // clang-format on
 
 		GeometryInstance geometryInstance{};
 		geometryInstance.transform                   = transform;
