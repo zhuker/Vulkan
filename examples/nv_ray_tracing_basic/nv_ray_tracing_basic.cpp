@@ -23,6 +23,7 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
+#include <glm/glm/gtc/quaternion.hpp>
 #include <xcb/xcb.h>
 
 #include "vulkan/vulkan.h"
@@ -2043,9 +2044,77 @@ class VulkanExample final
 	}
 };
 
-int main(const int argc, const char *argv[])
+int main1(const int argc, const char *argv[])
 {
 	VulkanExample vulkanExample{};
 	vulkanExample.main();
+	return 0;
+}
+#include <glm/gtx/string_cast.hpp>
+glm::mat4 interpolate(glm::mat4 &_mat1, glm::mat4 &_mat2, float _time)
+{
+	glm::quat rot0 = glm::quat_cast(_mat1);
+	glm::quat rot1 = glm::quat_cast(_mat2);
+
+	glm::quat finalRot = glm::slerp(rot0, rot1, _time);
+
+	glm::mat4 finalMat = glm::mat4_cast(finalRot);
+
+	finalMat[3] = _mat1[3] * (1 - _time) + _mat2[3] * _time;
+
+	return finalMat;
+}
+
+#include <glm/gtx/matrix_interpolation.hpp>
+int main()
+{
+	glm::mat4x4 transforms0 = {
+	    1.0f, 0.0f, 0.0f, 0.0f,
+	    0.0f, 1.0f, 0.0f, 0.0f,
+	    0.0f, 0.0f, 1.0f, 0.0f,
+	    0.0f, 0.0f, 0.0f, 1.0f};
+
+	glm::mat4x4 transforms1 = {
+	    2.0f, 0.0f, 0.0f, 0.0f,
+	    0.0f, 2.0f, 0.0f, 0.0f,
+	    0.0f, 0.0f, 2.0f, 0.0f,
+	    0.0f, 0.0f, 0.0f, 1.0f};
+	glm::mat4x4 i0 = glm::inverse(transforms0);
+	glm::mat4x4 i1 = glm::inverse(transforms1);
+
+	for (float delta = 0.1f; delta <= 1.0f; delta += 0.1f)
+	{
+		glm::mat4 xx = glm::interpolate(transforms0, transforms1, delta);
+		std::cout << glm::to_string(xx) << std::endl;
+	}
+
+	//
+	//	float interpolation = 0.5;
+	//
+	//	glm::quat firstQuat  = glm::quat_cast(transforms0);
+	//	glm::quat secondQuat = glm::quat_cast(transforms1);
+	//	glm::quat finalQuat  = glm::slerp(firstQuat, secondQuat, interpolation);
+	//
+	//    glm::mat4x4 interpolatedMatrix = glm::mat4_cast(finalQuat);
+	//    std::cout << glm::to_string(interpolatedMatrix) << std::endl;
+	//	glm::vec4 transformComp1 = glm::vec4(transforms0[0][3], transforms0[1][3] , transforms0[2][3], transforms0[3][3]);
+	//    glm::vec4 transformComp2 = glm::vec4(transforms1[0][3], transforms1[1][3] , transforms1[2][3], transforms1[3][3]);
+	////
+	//	glm::vec4 finalTrans = (float) (1.0 - interpolation) * transformComp1 + transformComp2 * interpolation;
+	//    std::cout << glm::to_string(finalTrans) << std::endl;
+	//
+	//    interpolatedMatrix[0][3] = finalTrans.x;
+	//    interpolatedMatrix[1][3] = finalTrans.y;
+	//    interpolatedMatrix[2][3] = finalTrans.z;
+	//    interpolatedMatrix[3][3] = finalTrans.w;
+	//    std::cout << glm::to_string(interpolatedMatrix) << std::endl;
+
+	//
+	//	// good for now, although in future the 2 transformation components need to be interpolated
+	//	orderedBones[i]->Animation->interpoltaedMatrix[0][3] = finalTrans.x;
+	//	orderedBones[i]->Animation->interpoltaedMatrix[1][3] = finalTrans.y;
+	//	orderedBones[i]->Animation->interpoltaedMatrix[2][3] = finalTrans.z;
+	//	orderedBones[i]->Animation->interpoltaedMatrix[3][3] = finalTrans.w;
+
 	return 0;
 }
