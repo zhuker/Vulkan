@@ -183,6 +183,17 @@ static std::string to_string(const HitPy &hit)
 	return res;
 }
 
+using Vector3f = glm::vec3;
+
+std::vector<Ray> rays = {
+    ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
+    ray(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
+    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+    ray(Vector3f(0.499999, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
+    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+    ray(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
+    ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0))};
+
 static inline void ASSERT_NEAR(float expected, float actual, float epsilon)
 {
 	float absdiff = abs(expected - actual);
@@ -342,11 +353,6 @@ static void test_simple_trace(const std::vector<Hit> &valid_hits)
 
 class VulkanExample final
 {
-	std::string getWindowTitle()
-	{
-		return title + " - " + deviceProperties.deviceName;
-	}
-
 	void createPipelineCache()
 	{
 		VkPipelineCacheCreateInfo pipelineCacheCreateInfo = {};
@@ -388,62 +394,59 @@ class VulkanExample final
 	{
 		return getAssetPath() + "shaders/" + shaderDir + "/";
 	}
-	// Vulkan instance, stores all per-application states
-	VkInstance               instance{};
-	std::vector<std::string> supportedInstanceExtensions;
-	// Physical device (GPU) that Vulkan will use
-	VkPhysicalDevice physicalDevice{};
-	// Stores physical device properties (for e.g. checking device limits)
-	VkPhysicalDeviceProperties deviceProperties{};
-	// Stores the features available on the selected physical device (for e.g. checking if a feature is available)
-	VkPhysicalDeviceFeatures deviceFeatures{};
-	// Stores all available memory (type) properties for the physical device
-	VkPhysicalDeviceMemoryProperties deviceMemoryProperties{};
-	/** @brief Set of physical device features to be enabled for this example (must be set in the derived constructor) */
-	VkPhysicalDeviceFeatures enabledFeatures{};
-	/** @brief Set of device extensions to be enabled for this example (must be set in the derived constructor) */
-	std::vector<const char *> enabledDeviceExtensions;
-	std::vector<const char *> enabledInstanceExtensions;
-	/** @brief Optional pNext structure for passing extension structures to device creation */
-	void *deviceCreatepNextChain = nullptr;
-	/** @brief Logical device, application's view of the physical device (GPU) */
-	VkDevice device{};
-	// Handle to the device graphics queue that command buffers are submitted to
-	VkQueue queue{};
-	// Depth buffer format (selected during Vulkan initialization)
-	VkFormat depthFormat = VK_FORMAT_UNDEFINED;
-	// Command buffer pool
-	VkCommandPool cmdPool{};
-	/** @brief Pipeline stages used to wait at for graphics queue submissions */
-	VkPipelineStageFlags submitPipelineStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	// Contains command buffers and semaphores to be presented to the queue
-	VkSubmitInfo submitInfo{};
-	// Command buffers used for rendering
-	std::vector<VkCommandBuffer> drawCmdBuffers;
-	// Global render pass for frame buffer writes
-	VkRenderPass renderPass{};
-	// List of available frame buffers (same as number of swap chain images)
-	std::vector<VkFramebuffer> frameBuffers;
-	// Active frame buffer index
-	uint32_t currentBuffer = 0;
-	// Descriptor set pool
-	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-	// List of shader modules created (stored for cleanup)
-	std::vector<VkShaderModule> shaderModules;
-	// Pipeline cache object
-	VkPipelineCache pipelineCache{};
-	// Wraps the swap chain to present images (framebuffers) to the windowing system
-	VulkanSwapChain swapChain;
+	VkInstance                            instance{};        // Vulkan instance, stores all per-application states
+	std::vector<std::string>              supportedInstanceExtensions;
+	VkPhysicalDevice                      physicalDevice{};                // Physical device (GPU) that Vulkan will use
+	VkPhysicalDeviceProperties            deviceProperties{};              // Stores physical device properties (for e.g. checking device limits)
+	VkPhysicalDeviceFeatures              deviceFeatures{};                // Stores the features available on the selected physical device (for e.g. checking if a feature is available)
+	VkPhysicalDeviceMemoryProperties      deviceMemoryProperties{};        // Stores all available memory (type) properties for the physical device
+	VkPhysicalDeviceFeatures              enabledFeatures{};               /** @brief Set of physical device features to be enabled for this example (must be set in the derived constructor) */
+	std::vector<const char *>             enabledDeviceExtensions;         /** @brief Set of device extensions to be enabled for this example (must be set in the derived constructor) */
+	std::vector<const char *>             enabledInstanceExtensions;
+	void *                                deviceCreatepNextChain = nullptr;                                     /** @brief Optional pNext structure for passing extension structures to device creation */
+	VkDevice                              device{};                                                             /** @brief Logical device, application's view of the physical device (GPU) */
+	VkQueue                               queue{};                                                              // Handle to the device graphics queue that command buffers are submitted to
+	VkFormat                              depthFormat = VK_FORMAT_UNDEFINED;                                    // Depth buffer format (selected during Vulkan initialization)
+	VkCommandPool                         cmdPool{};                                                            // Command buffer pool
+	VkPipelineStageFlags                  submitPipelineStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; /** @brief Pipeline stages used to wait at for graphics queue submissions */
+	VkSubmitInfo                          submitInfo{};                                                         // Contains command buffers and semaphores to be presented to the queue
+	std::vector<VkCommandBuffer>          drawCmdBuffers;                                                       // Command buffers used for rendering
+	VkRenderPass                          renderPass{};                                                         // Global render pass for frame buffer writes
+	std::vector<VkFramebuffer>            frameBuffers;                                                         // List of available frame buffers (same as number of swap chain images)
+	uint32_t                              currentBuffer  = 0;                                                   // Active frame buffer index
+	VkDescriptorPool                      descriptorPool = VK_NULL_HANDLE;                                      // Descriptor set pool
+	std::map<std::string, VkShaderModule> shaderModules;                                                        // List of shader modules created (stored for cleanup)
+	VkPipelineCache                       pipelineCache{};                                                      // Pipeline cache object
+	VulkanSwapChain                       swapChain;                                                            // Wraps the swap chain to present images (framebuffers) to the windowing system
 	// Synchronization semaphores
 	struct
 	{
-		// Swap chain image presentation
-		VkSemaphore presentComplete;
-		// Command buffer submission and execution
-		VkSemaphore renderComplete;
+		VkSemaphore presentComplete;        // Swap chain image presentation
+		VkSemaphore renderComplete;         // Command buffer submission and execution
 	} semaphores{};
 	std::vector<VkFence> waitFences;
-	void                 destroyCommandBuffers()
+	uint32_t             width  = 1280;
+	uint32_t             height = 720;
+	vks::VulkanDevice *  vulkanDevice{}; /** @brief Encapsulated physical and logical vulkan device */
+	std::string          title      = "VK_NV_ray_tracing";
+	std::string          name       = "vulkanExample";
+	uint32_t             apiVersion = VK_API_VERSION_1_0;
+
+	struct
+	{
+		VkImage        image;
+		VkDeviceMemory mem;
+		VkImageView    view;
+	} depthStencil{};
+
+	// OS specific
+	bool                     quit = false;
+	xcb_connection_t *       connection{};
+	xcb_screen_t *           screen{};
+	xcb_window_t             window{};
+	xcb_intern_atom_reply_t *atom_wm_delete_window{};
+
+	void destroyCommandBuffers()
 	{
 		vkFreeCommandBuffers(device, cmdPool, static_cast<uint32_t>(drawCmdBuffers.size()), drawCmdBuffers.data());
 	}
@@ -461,30 +464,6 @@ class VulkanExample final
 
 		VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocateInfo, drawCmdBuffers.data()));
 	}
-
-	uint32_t width  = 1280;
-	uint32_t height = 720;
-
-	/** @brief Encapsulated physical and logical vulkan device */
-	vks::VulkanDevice *vulkanDevice{};
-
-	std::string title      = "VK_NV_ray_tracing";
-	std::string name       = "vulkanExample";
-	uint32_t    apiVersion = VK_API_VERSION_1_0;
-
-	struct
-	{
-		VkImage        image;
-		VkDeviceMemory mem;
-		VkImageView    view;
-	} depthStencil{};
-
-	// OS specific
-	bool                     quit = false;
-	xcb_connection_t *       connection{};
-	xcb_screen_t *           screen{};
-	xcb_window_t             window{};
-	xcb_intern_atom_reply_t *atom_wm_delete_window{};
 
 	void initxcbConnection()
 	{
@@ -711,13 +690,17 @@ class VulkanExample final
 	/** @brief Loads a SPIR-V shader file for the given shader stage */
 	VkPipelineShaderStageCreateInfo loadShader(const std::string &fileName, VkShaderStageFlagBits stage)
 	{
+		if (shaderModules.count(fileName) == 0)
+		{
+			VkShaderModule module = vks::tools::loadShader(fileName.c_str(), device);
+			assert(module != VK_NULL_HANDLE);
+			shaderModules.emplace(fileName, module);
+		}
 		VkPipelineShaderStageCreateInfo shaderStage = {};
 		shaderStage.sType                           = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		shaderStage.stage                           = stage;
-		shaderStage.module                          = vks::tools::loadShader(fileName.c_str(), device);
+		shaderStage.module                          = shaderModules.at(fileName);
 		shaderStage.pName                           = "main";
-		assert(shaderStage.module != VK_NULL_HANDLE);
-		shaderModules.push_back(shaderStage.module);
 		return shaderStage;
 	}
 
@@ -808,8 +791,6 @@ class VulkanExample final
 		device = vulkanDevice->logicalDevice;
 	}
 
-	using Vector3f = glm::vec3;
-
 	PFN_vkCreateAccelerationStructureNV                vkCreateAccelerationStructureNV{};
 	PFN_vkDestroyAccelerationStructureNV               vkDestroyAccelerationStructureNV{};
 	PFN_vkBindAccelerationStructureMemoryNV            vkBindAccelerationStructureMemoryNV{};
@@ -845,7 +826,7 @@ class VulkanExample final
 	} uniformData;
 	vks::Buffer ubo{};
 
-	VkPipeline            pipeline{};
+	VkPipeline            pipeline = VK_NULL_HANDLE;
 	VkPipelineLayout      pipelineLayout{};
 	VkDescriptorSet       descriptorSet{};
 	VkDescriptorSetLayout descriptorSetLayout{};
@@ -904,15 +885,6 @@ class VulkanExample final
 		                           {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 	}
-
-	std::vector<Ray> rays = {
-	    ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
-	    ray(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
-	    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
-	    ray(Vector3f(0.499999, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
-	    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
-	    ray(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
-	    ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0))};
 
 	void createStorageBuffer()
 	{
@@ -1188,13 +1160,6 @@ class VulkanExample final
 	*/
 	void createScene()
 	{
-		glm::mat3x4 transform_ = {
-		    0.1f, 0.0f, 0.0f, 0.0f,
-		    0.0f, 0.1f, 0.0f, 0.0f,
-		    0.0f, 0.0f, 0.1f, 0.0f};
-
-		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2, transform_)));
 		buildBlas();
 		buildTlas();
 	}
@@ -1592,7 +1557,7 @@ class VulkanExample final
 	int64_t  last_update_sec = -1;
 	int64_t  start           = current_time_msec() / 1000;
 
-	void draw()
+	std::vector<Hit> draw()
 	{
 		int64_t start_frame = current_time_msec();
 		prepareFrame();
@@ -1625,6 +1590,7 @@ class VulkanExample final
 			{
 				if (objects.find(2) == objects.end())
 				{
+					//add
 					printf("create object\n");
 					objects.emplace(std::make_pair(2, createMyObj(vertices3, indices3)));
 					auto &obj0 = objects.at(2);
@@ -1678,22 +1644,20 @@ class VulkanExample final
 			{
 				valid_hits.push_back(computeOutput[i]);
 			}
-			auto ray = &computeInput[i];
-			*ray     = rays[i % rays.size()];
+			//			auto ray = &computeInput[i];
+			//			*ray     = rays[i % rays.size()];
 		}
+		printf("hits %d\n", cnt);
 
-		test_add_two_objects_and_transform1(valid_hits);
-		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
-		                                          //		hostBuffer.unmap();
-		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
-		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
+		//		test_add_two_objects_and_transform1(valid_hits);
+		return valid_hits;
+		//		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
+		//		hostBuffer.unmap();
+		//		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
+		//		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
 
-		long time = current_time_msec() - start_frame;
-		printf("rays %d %ldmsec hit0 valid: %d lidar %d inst %d prim %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", cnt, time, hit0.valid, hit0.lidar_id, hit0.instID, hit0.primID, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
-		//		if (cnt > 0) {
-		//			const auto &iter = std::find_if(computeOutput.begin(), computeOutput.end(), [](const HitPy &hit) { return hit.valid; });
-		//			printf("%f,%f,%f\n", iter->point[0], iter->point[1], iter->point[2]);
-		//		}
+		//		long time = current_time_msec() - start_frame;
+		//		printf("rays %d %ldmsec hit0 valid: %d lidar %d inst %d prim %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", cnt, time, hit0.valid, hit0.lidar_id, hit0.instID, hit0.primID, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
 	}
 
 	/** @brief Setup the vulkan instance, enable required extensions and connect to the physical device (GPU) */
@@ -1770,7 +1734,9 @@ class VulkanExample final
 		                    window, (*reply).atom, 4, 32, 1,
 		                    &(*atom_wm_delete_window).atom);
 
-		std::string windowTitle = getWindowTitle();
+		std::string result;
+		result                  = title + " - " + deviceProperties.deviceName;
+		std::string windowTitle = result;
 		xcb_change_property(connection, XCB_PROP_MODE_REPLACE,
 		                    window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8,
 		                    windowTitle.size(), windowTitle.c_str());
@@ -1823,14 +1789,18 @@ class VulkanExample final
 		vkGetRayTracingShaderGroupHandlesNV            = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesNV>(vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesNV"));
 		vkCmdTraceRaysNV                               = reinterpret_cast<PFN_vkCmdTraceRaysNV>(vkGetDeviceProcAddr(device, "vkCmdTraceRaysNV"));
 
-		createScene();
 		createStorageImage();
 		createUniformBuffer();
 		createStorageBuffer();
-		createRayTracingPipeline();
-		createShaderBindingTable();
-		createDescriptorSets();
-		buildCommandBuffers();
+
+		if (!objects.empty())
+		{
+			createScene();
+			createRayTracingPipeline();
+			createShaderBindingTable();
+			createDescriptorSets();
+			buildCommandBuffers();
+		}
 	}
 	/** @brief Entry point for the main render loop */
 	void renderLoop()
@@ -1912,7 +1882,7 @@ class VulkanExample final
 
 		for (auto &shaderModule : shaderModules)
 		{
-			vkDestroyShaderModule(device, shaderModule, nullptr);
+			vkDestroyShaderModule(device, shaderModule.second, nullptr);
 		}
 		vkDestroyImageView(device, depthStencil.view, nullptr);
 		vkDestroyImage(device, depthStencil.image, nullptr);
@@ -1956,7 +1926,47 @@ class VulkanExample final
 		initVulkan();
 		setupWindow();
 		prepare();
-		renderLoop();
+
+		xcb_flush(connection);
+		xcb_generic_event_t *event;
+		while ((event = xcb_poll_for_event(connection)))
+		{
+			handleEvent(event);
+			free(event);
+		}
+
+		glm::mat3x4 transform_ = {
+		    0.1f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 0.1f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 0.1f, 0.0f};
+
+		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2, transform_)));
+		auto &obj0 = objects.at(0);
+		auto &obj1 = objects.at(1);
+		createOrUpdateBlas(obj0.blas, obj0.geom);
+		createOrUpdateBlas(obj1.blas, obj1.geom);
+		buildTlas();
+		if (pipeline == VK_NULL_HANDLE)
+		{
+			createRayTracingPipeline();
+			createShaderBindingTable();
+		}
+
+		createDescriptorSets();
+		destroyCommandBuffers();
+		createCommandBuffers();
+		buildCommandBuffers();
+		vkDeviceWaitIdle(device);
+
+		auto valid_hits = draw();
+		test_add_two_objects_and_transform1(valid_hits);
+
+		// Flush device to make sure all resources can be freed
+		if (device != VK_NULL_HANDLE)
+		{
+			vkDeviceWaitIdle(device);
+		}
 	}
 };
 
