@@ -60,14 +60,14 @@ struct Vertex
 };
 
 // clang-format off
-std::vector<Vertex> vertices1 = {
+std::vector<Vertex> vertices0 = {
     {{0.0f, 0.0f, 0.0f, 0.0f}},
     {{0.0f, 1.0f, 0.0f, 0.0f}},
     {{1.0f, 0.0f, 0.0f, 0.0f}},
     {{1.0f, 1.0f, 0.0f, 0.0f}},
 };
 
-std::vector<Vertex> vertices2 = {
+std::vector<Vertex> vertices1 = {
     {{ 0.5f, -0.5f,  0.5f, 0.0f}},
     {{ 0.5f, -0.5f, -0.5f, 0.0f}},
     {{-0.5f, -0.5f,  0.5f, 0.0f}},
@@ -78,7 +78,7 @@ std::vector<Vertex> vertices2 = {
     {{ 0.5f,  0.5f, -0.5f, 0.0f}},
 };
 
-std::vector<Vertex> vertices3 = {
+std::vector<Vertex> vertices2 = {
     {{2.0f, 0.0f, -5.0f, 0.0f}},
     {{2.0f, 1.0f, -5.0f, 0.0f}},
     {{3.0f, 0.0f, -5.0f, 0.0f}},
@@ -87,10 +87,10 @@ std::vector<Vertex> vertices3 = {
 
 // clang-format on
 
-std::vector<uint32_t> indices1 = {0, 1, 2, 2, 3, 0};
-std::vector<uint32_t> indices2 = {0, 1, 3, 3, 1, 7, 2, 6, 0, 0, 6, 1, 4, 5, 2, 2, 5, 6,
+std::vector<uint32_t> indices0 = {0, 1, 2, 2, 3, 0};
+std::vector<uint32_t> indices1 = {0, 1, 3, 3, 1, 7, 2, 6, 0, 0, 6, 1, 4, 5, 2, 2, 5, 6,
                                   3, 7, 4, 4, 7, 5, 6, 5, 1, 1, 5, 7, 4, 2, 3, 3, 2, 0};
-std::vector<uint32_t> indices3 = {0, 1, 2, 2, 3, 0};
+std::vector<uint32_t> indices2 = {0, 1, 2, 2, 3, 0};
 
 // Ray tracing geometry instance
 struct GeometryInstance
@@ -1574,10 +1574,10 @@ class VulkanExample final
 			if (elapsed <= 5)
 			{
 				//update instance transform
-				vertices1[0].pos[2] -= 0.1f;
+				vertices0[0].pos[2] -= 0.1f;
 				printf("%d %ld update instance transform\n", frameNumber, elapsed);
 				auto &obj0 = objects.at(0);
-				updateVertices(obj0.model, vertices1);
+				updateVertices(obj0.model, vertices0);
 				obj0.geom = createVkGeometryNV(obj0.model);
 				createOrUpdateBlas(obj0.blas, obj0.geom, true);
 
@@ -1592,7 +1592,7 @@ class VulkanExample final
 				{
 					//add
 					printf("create object\n");
-					objects.emplace(std::make_pair(2, createMyObj(vertices3, indices3)));
+					objects.emplace(std::make_pair(2, createMyObj(vertices2, indices2)));
 					auto &obj0 = objects.at(2);
 					createOrUpdateBlas(obj0.blas, obj0.geom);
 					buildTlas();
@@ -1867,21 +1867,20 @@ class VulkanExample final
 
 	~VulkanExample()
 	{
-
-        vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-        vkDestroyImageView(device, storageImage.view, nullptr);
-        vkDestroyImage(device, storageImage.image, nullptr);
-        vkFreeMemory(device, storageImage.memory, nullptr);
-        vkFreeMemory(device, topLevelAS.memory, nullptr);
-        vkDestroyAccelerationStructureNV(device, topLevelAS.accelerationStructure, nullptr);
-        for (auto &obj : objects)
-        {
-            destroyObjectInternal(obj.second);
-        }
-        shaderBindingTable.destroy();
-        ubo.destroy();
+		vkDestroyPipeline(device, pipeline, nullptr);
+		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+		vkDestroyImageView(device, storageImage.view, nullptr);
+		vkDestroyImage(device, storageImage.image, nullptr);
+		vkFreeMemory(device, storageImage.memory, nullptr);
+		vkFreeMemory(device, topLevelAS.memory, nullptr);
+		vkDestroyAccelerationStructureNV(device, topLevelAS.accelerationStructure, nullptr);
+		for (auto &obj : objects)
+		{
+			destroyObjectInternal(obj.second);
+		}
+		shaderBindingTable.destroy();
+		ubo.destroy();
 
 		// Clean up Vulkan resources
 		swapChain.cleanup();
@@ -1920,63 +1919,62 @@ class VulkanExample final
 		vkDestroyInstance(instance, nullptr);
 		xcb_destroy_window(connection, window);
 		xcb_disconnect(connection);
-
 	}
 
-	void test_add_two_objects_and_transform2() {
-        glm::mat3x4 transforms0 = {
-            1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, -10.0f};
-        glm::mat3x4 transforms1 = {
-            0.1f, 0.0f, 0.0f, 0.0f,
-            0.0f, 0.1f, 0.0f, 0.0f,
-            0.0f, 0.0f, 0.1f, 0.0f};
-        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1, transforms0)));
-        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2, transforms1)));
-        auto &obj0 = objects.at(0);
-        auto &obj1 = objects.at(1);
-        createOrUpdateBlas(obj0.blas, obj0.geom);
-        createOrUpdateBlas(obj1.blas, obj1.geom);
-        buildTlas();
-        if (pipeline == VK_NULL_HANDLE)
-        {
-            createRayTracingPipeline();
-            createShaderBindingTable();
-        }
+	void test_add_two_objects_and_transform2()
+	{
+		glm::mat3x4 transforms0 = {
+		    1.0f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, -10.0f};
+		glm::mat3x4 transforms1 = {
+		    0.1f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 0.1f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 0.1f, 0.0f};
+		objects.emplace(std::make_pair(0, createMyObj(vertices0, indices0, transforms0)));
+		objects.emplace(std::make_pair(1, createMyObj(vertices1, indices1, transforms1)));
+		auto &obj0 = objects.at(0);
+		auto &obj1 = objects.at(1);
+		createOrUpdateBlas(obj0.blas, obj0.geom);
+		createOrUpdateBlas(obj1.blas, obj1.geom);
+		buildTlas();
+		if (pipeline == VK_NULL_HANDLE)
+		{
+			createRayTracingPipeline();
+			createShaderBindingTable();
+		}
 
-        createDescriptorSets();
-        destroyCommandBuffers();
-        createCommandBuffers();
-        buildCommandBuffers();
-        vkDeviceWaitIdle(device);
+		createDescriptorSets();
+		destroyCommandBuffers();
+		createCommandBuffers();
+		buildCommandBuffers();
+		vkDeviceWaitIdle(device);
 
-        auto valid_hits = draw();
-        // clang-format off
+		auto valid_hits = draw();
+		// clang-format off
         std::vector<HitPy> expecteds = {
             {{0.000001f, 0.00, 0.05f}, {-0.0, 0.0, 1.0}, 1.95f, 0.49999f, 0.00001f, ignore, 1, 11, 0, true},
             {{0.000000,  0.05f,0.00f}, { 0.0, 1.0,-0.0}, 1.95f, 0.500000, 0.500000, ignore, 1, 6, 0, true},
         };
-        // clang-format on
-        assert_near(expecteds, valid_hits);
+		// clang-format on
+		assert_near(expecteds, valid_hits);
 
-        //delete
-        auto &obj = objects.at(1);
-        destroyObjectInternal(obj);
-        objects.erase(1);
-        buildTlas();
-        createDescriptorSets();
-        destroyCommandBuffers();
-        createCommandBuffers();
-        buildCommandBuffers();
-        vkDeviceWaitIdle(device);
+		//delete
+		auto &obj = objects.at(1);
+		destroyObjectInternal(obj);
+		objects.erase(1);
+		buildTlas();
+		createDescriptorSets();
+		destroyCommandBuffers();
+		createCommandBuffers();
+		buildCommandBuffers();
+		vkDeviceWaitIdle(device);
 
-        auto valid_hits2 = draw();
-        std::vector<HitPy> expecteds2 = {
-            {{0.000001f, 0.0, -10.0}, {0.0, 0.0, -1.0}, 12.0, 0.0, 0.000001f, ignore, 0, 0, 0, true}
-        };
-        assert_near(expecteds2, valid_hits2);
-    }
+		auto               valid_hits2 = draw();
+		std::vector<HitPy> expecteds2  = {
+            {{0.000001f, 0.0, -10.0}, {0.0, 0.0, -1.0}, 12.0, 0.0, 0.000001f, ignore, 0, 0, 0, true}};
+		assert_near(expecteds2, valid_hits2);
+	}
 
 	void main()
 	{
@@ -1991,8 +1989,8 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-        test_add_two_objects_and_transform2();
-        // Flush device to make sure all resources can be freed
+		test_add_two_objects_and_transform2();
+		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}
 };
