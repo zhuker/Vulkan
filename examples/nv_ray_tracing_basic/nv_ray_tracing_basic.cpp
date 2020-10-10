@@ -1573,7 +1573,7 @@ class VulkanExample final
 			auto elapsed    = sec - start;
 			if (elapsed <= 5)
 			{
-				//update instance transform
+				//update vertices
 				vertices0[0].pos[2] -= 0.1f;
 				printf("%d %ld update instance transform\n", frameNumber, elapsed);
 				auto &obj0 = objects.at(0);
@@ -1581,6 +1581,7 @@ class VulkanExample final
 				obj0.geom = createVkGeometryNV(obj0.model);
 				createOrUpdateBlas(obj0.blas, obj0.geom, true);
 
+				//update instance transform
 				auto &obj1 = objects.at(1);
 				obj1.instance.transform[0][0] += 0.01f;
 				obj1.instance.transform[1][1] += 0.01f;
@@ -1976,6 +1977,53 @@ class VulkanExample final
 		assert_near(expecteds2, valid_hits2);
 	}
 
+	void test_animated_mesh()
+	{
+		glm::mat3x4 transforms = {
+		    1.0f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, 10.0f};
+
+		objects.emplace(std::make_pair(0, createMyObj(vertices0, indices0, transforms)));
+		auto &obj0 = objects.at(0);
+		createOrUpdateBlas(obj0.blas, obj0.geom);
+		buildTlas();
+		if (pipeline == VK_NULL_HANDLE)
+		{
+			createRayTracingPipeline();
+			createShaderBindingTable();
+		}
+		createDescriptorSets();
+		destroyCommandBuffers();
+		createCommandBuffers();
+		buildCommandBuffers();
+		vkDeviceWaitIdle(device);
+
+		auto               valid_hits = draw();
+		std::vector<HitPy> expecteds  = {
+            {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
+            {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0, ignore, 0, 0, 0, true},
+        };
+		assert_near(expecteds, valid_hits);
+
+		// clang-format off
+        std::vector<Vertex> vertices_animated{
+            {-1.0f,-1.0f,  0.0f, 0.0f,},
+            {-1.0f, 1.0f,  0.0f, 0.0f,},
+            {0.25f, 0.25f, 0.0f, 0.0f,},
+            {0.25f, 0.25f, 1.0f, 0.0f},
+        };
+		// clang-format on
+		updateVertices(obj0.model, vertices0);
+		obj0.geom = createVkGeometryNV(obj0.model);
+		createOrUpdateBlas(obj0.blas, obj0.geom, true);
+		buildTlas(true);
+		auto               hits_animated = draw();
+		std::vector<HitPy> expecteds2    = {
+            {{0.0f, 0.0f, 10.0f}, {0.0f, 0.0f, -2.5f}, 10.0f, -0.0f, 0.8f, ignore, 0, 0, 0, true}};
+		assert_near(expecteds2, hits_animated);
+	}
+
 	void main()
 	{
 		initVulkan();
@@ -1989,7 +2037,7 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-		test_add_two_objects_and_transform2();
+		test_animated_mesh();
 		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}
