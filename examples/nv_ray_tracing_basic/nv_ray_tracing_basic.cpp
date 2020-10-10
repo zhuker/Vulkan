@@ -86,7 +86,7 @@ struct Ray
 	uint      padding{};           // makes structure 64bytes in size
 };
 
-static Ray rayPy(const glm::vec3 origin, const glm::vec3 direction)
+static Ray ray(const glm::vec3 origin, const glm::vec3 direction)
 {
 	Ray r{};
 	r.origin    = {origin, 0.f};
@@ -166,7 +166,7 @@ static inline void ASSERT_NEAR(float expected, float actual, float epsilon)
 static void assert_near(const HitPy &expected, const Hit &actual)
 {
 	printf("e: %s\na: %s\n", to_string(expected).c_str(), to_string(actual).c_str());
-	const float eps = 0.00001f;
+	const float eps = 0.0001f;
 	ASSERT_NEAR(expected.distance, actual.distance, eps);
 	ASSERT_NEAR(expected.point.x, actual.point.x, eps);
 	ASSERT_NEAR(expected.point.y, actual.point.y, eps);
@@ -378,13 +378,14 @@ class VulkanExample final : public VulkanExampleBase
 		vulkanDevice->flushCommandBuffer(cmdBuffer, queue);
 	}
 
-	std::vector<Ray> rays = {rayPy(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0,-1.0)),
-	                         rayPy(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0,-1.0, 0.0)),
-	                         rayPy(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
-	                         rayPy(Vector3f(0.499999, 0.5,-1.0), Vector3f(0.0, 0.0, 1.0)),
-	                         rayPy(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
-	                         rayPy(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
-	                         rayPy(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0))};
+	std::vector<Ray> rays = {
+	    ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
+	    ray(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
+	    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+	    ray(Vector3f(0.499999, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
+	    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+	    ray(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
+	    ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0))};
 
 	void createStorageBuffer()
 	{
@@ -542,7 +543,7 @@ class VulkanExample final : public VulkanExampleBase
 		geometryInstance.instanceId                  = obj.first;
 		geometryInstance.mask                        = 0xff;
 		geometryInstance.instanceOffset              = 0;
-		geometryInstance.flags                       = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
+		geometryInstance.flags                       = 0; //VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
 		geometryInstance.accelerationStructureHandle = obj.second.blas.handle;
 		return geometryInstance;
 	}
@@ -660,8 +661,13 @@ class VulkanExample final : public VulkanExampleBase
 	*/
 	void createScene()
 	{
+		glm::mat3x4 transform_ = {
+		    0.1f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 0.1f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 0.1f, 0.0f};
+
 		objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
+		objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2, transform_)));
 		buildBlas();
 		buildTlas();
 	}
@@ -984,13 +990,6 @@ class VulkanExample final : public VulkanExampleBase
 		return model;
 	}
 
-	static ObjInstance createObjInstance(const glm::mat3x4 &transform = glm::mat3x4{1})
-	{
-		ObjInstance instance;
-		instance.transform = transform;
-		return instance;
-	}
-
 	void prepare() final
 	{
 		VulkanExampleBase::prepare();
@@ -1024,12 +1023,12 @@ class VulkanExample final : public VulkanExampleBase
 		prepared = true;
 	}
 
-	MyObj createMyObj(std::vector<Vertex> &vertices, std::vector<uint32_t> indices)
+	MyObj createMyObj(std::vector<Vertex> &vertices, std::vector<uint32_t> indices, const glm::mat3x4 &transform = glm::mat3x4{1})
 	{
 		MyObj obj{};
-		obj.model    = createObject(vertices, indices);
-		obj.geom     = createVkGeometryNV(obj.model);
-		obj.instance = createObjInstance();
+		obj.model              = createObject(vertices, indices);
+		obj.geom               = createVkGeometryNV(obj.model);
+		obj.instance.transform = transform;
 		return obj;
 	}
 
@@ -1189,7 +1188,7 @@ class VulkanExample final : public VulkanExampleBase
 			*ray     = rays[i % rays.size()];
 		}
 
-		test_add_two_objects(valid_hits);
+		test_add_two_objects_and_transform1(valid_hits);
 		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
 		                                          //		hostBuffer.unmap();
 		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
@@ -1208,6 +1207,34 @@ class VulkanExample final : public VulkanExampleBase
 		if (!prepared)
 			return;
 		draw();
+	}
+
+	void test_add_two_objects_and_transform1(const std::vector<Hit> &valid_hits)
+	{
+		if (3 != valid_hits.size())
+		{
+			for (const auto &validhit : valid_hits)
+			{
+				printf("e: %s\n", to_string(validhit).c_str());
+			}
+
+			assert(3 == valid_hits.size());
+		}
+		//        glm::mat3x4 transform_ = {
+		//            0.1f, 0.0f, 0.0f, 0.0f,
+		//            0.0f, 0.1f, 0.0f, 0.0f,
+		//            0.0f, 0.0f, 0.1f, 0.0f};
+		//
+		//        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
+		//        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2, transform_)));
+		// clang-format off
+        std::vector<HitPy> expecteds = {
+            {{0.000001f, 0.00,  0.05f},{-0.0, 0.0, 1.0}, 1.95f, 0.49999f, 0.00001f, ignore, 1, 11, 0, true},
+            {{0.000000,  0.05f, 0.00}, { 0.0, 1.0,-0.0}, 1.95f, 0.5, 0.5, ignore, 1, 6, 0, true},
+            {{0.500000,  0.50, -0.00}, { 0.0, 0.0,-1.0}, 1.00f, 0.5, 0.5, ignore, 0, 0, 0, true},
+        };
+		// clang-format on
+		assert_near(expecteds, valid_hits);
 	}
 
 	void test_add_two_objects(const std::vector<Hit> &valid_hits)

@@ -51,7 +51,7 @@ void main()
     vec4 direction = ololo.hits[idx].normal;
     uint lidar_id = ololo.hits[idx].lidar_id;
 
-    uint rayFlags = gl_RayFlagsOpaqueNV;
+    uint rayFlags = gl_RayFlagsCullBackFacingTrianglesNV;
     uint cullMask = 0xff;
     float tmin = 0.001;
     float tmax = gagaga.rays[idx].max_range_m;
