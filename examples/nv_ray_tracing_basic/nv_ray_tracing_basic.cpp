@@ -1939,6 +1939,28 @@ class VulkanExample final
 		}
 	}
 
+	void uploadRays(const std::vector<Ray> &rays_)
+	{
+		const auto         maxRays    = width * height;
+		const VkDeviceSize bufferSize = maxRays * sizeof(Ray);
+		if (hostBuffer.mapped == nullptr)
+		{
+			VK_CHECK_RESULT(hostBuffer.map());
+		}
+		assert(hostBuffer.mapped);
+
+		Ray *computeInput = (Ray *) hostBuffer.mapped;
+
+		for (size_t i = 0; i < maxRays; i++)
+		{
+			computeInput[i] = rays_[i % rays_.size()];
+		}
+		hostBuffer.flush();
+
+		VkBufferCopy copyRegion = {0, 0, bufferSize};
+		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
+	}
+
   public:
 	VulkanExample()
 	{
@@ -2118,28 +2140,6 @@ class VulkanExample final
 		std::vector<HitPy> expecteds2    = {
             {{0.0f, 0.0f, 10.0f}, {0.0f, 0.0f, -2.5f}, 10.0f, -0.0f, 0.8f, ignore, 0, 0, 0, true}};
 		assert_near(expecteds2, hits_animated);
-	}
-
-	void uploadRays(const std::vector<Ray> &rays_)
-	{
-		const auto         maxRays    = width * height;
-		const VkDeviceSize bufferSize = maxRays * sizeof(Ray);
-		if (hostBuffer.mapped == nullptr)
-		{
-			VK_CHECK_RESULT(hostBuffer.map());
-		}
-		assert(hostBuffer.mapped);
-
-		Ray *computeInput = (Ray *) hostBuffer.mapped;
-
-		for (size_t i = 0; i < maxRays; i++)
-		{
-			computeInput[i] = rays_[i % rays_.size()];
-		}
-		hostBuffer.flush();
-
-		VkBufferCopy copyRegion = {0, 0, bufferSize};
-		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
 	}
 
 	void add_object(const uint32_t id, const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices)
