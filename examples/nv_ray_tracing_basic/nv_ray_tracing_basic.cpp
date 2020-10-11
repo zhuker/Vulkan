@@ -24,6 +24,8 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/glm/gtc/quaternion.hpp>
+#include <glm/gtx/string_cast.hpp>
+#include <set>
 #include <xcb/xcb.h>
 
 #include "vulkan/vulkan.h"
@@ -34,6 +36,48 @@
 #include "VulkanTools.h"
 
 #include "VulkanInitializers.hpp"
+
+static constexpr uint32_t NUM_TIME_STEPS = 10;
+
+static glm::mat3x4 transform_at_time(const glm::mat3x4 &initial_transform, const glm::vec3 &isovelocity, const float ray_time)
+{
+	assert(ray_time >= 0.0f && ray_time <= 1.0f);
+	if (ray_time == 0.0f)
+		return initial_transform;
+	if (isovelocity == glm::vec3{0})
+		return initial_transform;
+
+	float time_per_step = 1.0f / (NUM_TIME_STEPS - 1);
+
+	for (int32_t step = 0; step < NUM_TIME_STEPS; step++)
+	{
+		int32_t next_step = step + 1;
+		float   t         = time_per_step * step;
+		float   tnext     = time_per_step * next_step;
+		if (tnext >= ray_time && ray_time > t)
+		{
+			float x = initial_transform[0][3] + (isovelocity[0] * 0.1f * step / NUM_TIME_STEPS);
+			float y = initial_transform[1][3] + (isovelocity[1] * 0.1f * step / NUM_TIME_STEPS);
+			float z = initial_transform[2][3] + (isovelocity[2] * 0.1f * step / NUM_TIME_STEPS);
+
+			float next_x = initial_transform[0][3] + (isovelocity[0] * 0.1f * next_step / NUM_TIME_STEPS);
+			float next_y = initial_transform[1][3] + (isovelocity[1] * 0.1f * next_step / NUM_TIME_STEPS);
+			float next_z = initial_transform[2][3] + (isovelocity[2] * 0.1f * next_step / NUM_TIME_STEPS);
+
+			float d  = (ray_time - t) / time_per_step;
+			float x_ = x * (1.0f - d) + next_x * d;
+			float y_ = y * (1.0f - d) + next_y * d;
+			float z_ = z * (1.0f - d) + next_z * d;
+			printf("\t%f (%f, %f, %f)\n", d, x_, y_, z_);
+			glm::mat3x4 copy = initial_transform;
+			copy[0][3]       = x_;
+			copy[1][3]       = y_;
+			copy[2][3]       = z_;
+			return copy;
+		}
+	}
+	return initial_transform;
+}
 
 static int64_t current_time_msec()
 {
@@ -119,11 +163,12 @@ struct Ray
 	uint      padding{};           // makes structure 64bytes in size
 };
 
-static Ray ray(const glm::vec3 origin, const glm::vec3 direction)
+static Ray ray(const glm::vec3 origin, const glm::vec3 direction, const float time = 0.0f)
 {
 	Ray r{};
 	r.origin    = {origin, 0.f};
 	r.direction = {direction, 0.0f};
+	r.time      = time;
 	return r;
 }
 
@@ -186,6 +231,16 @@ static std::string to_string(const HitPy &hit)
 
 using Vector3f = glm::vec3;
 
+std::vector<Ray> rays2 = {
+    ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
+    ray(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
+    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+    ray(Vector3f(0.499999, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
+    ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
+    ray(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
+    ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0)),
+    ray(Vector3f(1.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0), 0.98f)};
+
 std::vector<Ray> rays = {
     ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
     ray(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
@@ -227,6 +282,17 @@ static void assert_near(const HitPy &expected, const Hit &actual)
 
 static void assert_near(const std::vector<HitPy> &expecteds, const std::vector<Hit> &actuals)
 {
+	for (const auto &expected : expecteds)
+	{
+		printf("e: %s\n", to_string(expected).c_str());
+	}
+
+	for (const auto &actual : actuals)
+	{
+		printf("a: %s\n", to_string(actual).c_str());
+	}
+
+	ASSERT_EQ(expecteds.size(), actuals.size());
 	for (size_t i = 0; i < expecteds.size(); i++)
 	{
 		const auto &expected = expecteds[i];
@@ -279,7 +345,9 @@ struct ObjModel
 // Instance of the OBJ
 struct ObjInstance
 {
-	glm::mat3x4 transform{1};        // Position of the instance
+	glm::mat3x4 initial_transform{1};        // Position of the instance
+	glm::mat3x4 transform{1};                // Position of the instance at specified time
+	glm::vec3   isovelocity{0};
 };
 
 struct MyObj
@@ -822,8 +890,7 @@ class VulkanExample final
 
 	struct UniformData
 	{
-		glm::mat4 viewInverse;
-		glm::mat4 projInverse;
+		float time;
 	} uniformData;
 	vks::Buffer ubo{};
 
@@ -894,7 +961,7 @@ class VulkanExample final
 
 		for (size_t i = 0; i < computeInput.size(); i++)
 		{
-			computeInput[i] = rays[i % rays.size()];
+			computeInput[i] = rays2[i % rays2.size()];
 		}
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
@@ -1043,7 +1110,7 @@ class VulkanExample final
 		geometryInstance.instanceId                  = obj.first;
 		geometryInstance.mask                        = 0xff;
 		geometryInstance.instanceOffset              = 0;
-		geometryInstance.flags                       = 0;        //VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
+		geometryInstance.flags                       = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
 		geometryInstance.accelerationStructureHandle = obj.second.blas.handle;
 		return geometryInstance;
 	}
@@ -1486,9 +1553,10 @@ class VulkanExample final
 	MyObj createMyObj(std::vector<Vertex> &vertices, std::vector<uint32_t> indices, const glm::mat3x4 &transform = glm::mat3x4{1})
 	{
 		MyObj obj{};
-		obj.model              = createObject(vertices, indices);
-		obj.geom               = createVkGeometryNV(obj.model);
-		obj.instance.transform = transform;
+		obj.model                      = createObject(vertices, indices);
+		obj.geom                       = createVkGeometryNV(obj.model);
+		obj.instance.initial_transform = transform;
+		obj.instance.transform         = transform;
 		return obj;
 	}
 
@@ -2025,6 +2093,54 @@ class VulkanExample final
 		assert_near(expecteds2, hits_animated);
 	}
 
+	void test_pre_motion_blur()
+	{
+		glm::mat3x4 transforms = {
+		    1.0f, 0.0f, 0.0f, 0.9f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, 10.0f};
+
+		objects.emplace(std::make_pair(0, createMyObj(vertices0, indices0, transforms)));
+		auto &obj0 = objects.at(0);
+		createOrUpdateBlas(obj0.blas, obj0.geom);
+		buildTlas();
+		if (pipeline == VK_NULL_HANDLE)
+		{
+			createRayTracingPipeline();
+			createShaderBindingTable();
+		}
+		createDescriptorSets();
+		destroyCommandBuffers();
+		createCommandBuffers();
+		buildCommandBuffers();
+		vkDeviceWaitIdle(device);
+
+		auto               valid_hits = draw();
+		std::vector<HitPy> expecteds  = {
+            {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.4f, ignore, 0, 1, 0, true},
+        };
+		assert_near(expecteds, valid_hits);
+	}
+
+	void test_motion_blur()
+	{
+		glm::mat3x4 transform_3x4 = {
+		    1.0f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, 10.0f};
+		std::vector<float> isovelocity = {10.0f, 0, 0};
+		for (uint32_t t = 0; t < NUM_TIME_STEPS; t++)
+		{
+			// Create copy of transform
+			glm::mat3x4 transform_3x4_copy = transform_3x4;
+
+			// Apply linear velocity for now, we don't have angular velocity supported
+			transform_3x4_copy[0][3] += (isovelocity[0] * 0.1f * t / NUM_TIME_STEPS);
+			transform_3x4_copy[1][3] += (isovelocity[1] * 0.1f * t / NUM_TIME_STEPS);
+			transform_3x4_copy[2][3] += (isovelocity[2] * 0.1f * t / NUM_TIME_STEPS);
+		}
+	}
+
 	void main()
 	{
 		initVulkan();
@@ -2038,7 +2154,7 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-		test_animated_mesh();
+		test_pre_motion_blur();
 		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}
@@ -2050,71 +2166,63 @@ int main1(const int argc, const char *argv[])
 	vulkanExample.main();
 	return 0;
 }
-#include <glm/gtx/string_cast.hpp>
-glm::mat4 interpolate(glm::mat4 &_mat1, glm::mat4 &_mat2, float _time)
-{
-	glm::quat rot0 = glm::quat_cast(_mat1);
-	glm::quat rot1 = glm::quat_cast(_mat2);
 
-	glm::quat finalRot = glm::slerp(rot0, rot1, _time);
-
-	glm::mat4 finalMat = glm::mat4_cast(finalRot);
-
-	finalMat[3] = _mat1[3] * (1 - _time) + _mat2[3] * _time;
-
-	return finalMat;
-}
-
-#include <glm/gtx/matrix_interpolation.hpp>
 int main()
 {
-	glm::mat4x4 transforms0 = {
+	glm::mat3x4 transform_3x4 = {
 	    1.0f, 0.0f, 0.0f, 0.0f,
 	    0.0f, 1.0f, 0.0f, 0.0f,
-	    0.0f, 0.0f, 1.0f, 0.0f,
-	    0.0f, 0.0f, 0.0f, 1.0f};
+	    0.0f, 0.0f, 1.0f, 10.0f};
+	std::vector<float> isovelocity  = {10.0f, 0, 0};
+	std::vector<float> isovelocity2 = {10.0f, 0, 0};
+	bool               eq           = isovelocity == isovelocity2;
+	assert(eq);
+	std::vector<glm::mat3x4> transforms;
 
-	glm::mat4x4 transforms1 = {
-	    2.0f, 0.0f, 0.0f, 0.0f,
-	    0.0f, 2.0f, 0.0f, 0.0f,
-	    0.0f, 0.0f, 2.0f, 0.0f,
-	    0.0f, 0.0f, 0.0f, 1.0f};
-	glm::mat4x4 i0 = glm::inverse(transforms0);
-	glm::mat4x4 i1 = glm::inverse(transforms1);
-
-	for (float delta = 0.1f; delta <= 1.0f; delta += 0.1f)
+	for (uint32_t t = 0; t < NUM_TIME_STEPS; t++)
 	{
-		glm::mat4 xx = glm::interpolate(transforms0, transforms1, delta);
-		std::cout << glm::to_string(xx) << std::endl;
+		// Create copy of transform
+		glm::mat3x4 transform_3x4_copy = transform_3x4;
+
+		// Apply linear velocity for now, we don't have angular velocity supported
+		transform_3x4_copy[0][3] += (isovelocity[0] * 0.1f * t / NUM_TIME_STEPS);
+		transform_3x4_copy[1][3] += (isovelocity[1] * 0.1f * t / NUM_TIME_STEPS);
+		transform_3x4_copy[2][3] += (isovelocity[2] * 0.1f * t / NUM_TIME_STEPS);
+		std::cout << "step " << t << std::endl;
+		std::cout << glm::to_string(transform_3x4_copy) << std::endl;
+		transforms.emplace_back(transform_3x4_copy);
 	}
+	float ray_time = 0.42f;
+	float x        = 1.0f / (NUM_TIME_STEPS - 1);
 
-	//
-	//	float interpolation = 0.5;
-	//
-	//	glm::quat firstQuat  = glm::quat_cast(transforms0);
-	//	glm::quat secondQuat = glm::quat_cast(transforms1);
-	//	glm::quat finalQuat  = glm::slerp(firstQuat, secondQuat, interpolation);
-	//
-	//    glm::mat4x4 interpolatedMatrix = glm::mat4_cast(finalQuat);
-	//    std::cout << glm::to_string(interpolatedMatrix) << std::endl;
-	//	glm::vec4 transformComp1 = glm::vec4(transforms0[0][3], transforms0[1][3] , transforms0[2][3], transforms0[3][3]);
-	//    glm::vec4 transformComp2 = glm::vec4(transforms1[0][3], transforms1[1][3] , transforms1[2][3], transforms1[3][3]);
-	////
-	//	glm::vec4 finalTrans = (float) (1.0 - interpolation) * transformComp1 + transformComp2 * interpolation;
-	//    std::cout << glm::to_string(finalTrans) << std::endl;
-	//
-	//    interpolatedMatrix[0][3] = finalTrans.x;
-	//    interpolatedMatrix[1][3] = finalTrans.y;
-	//    interpolatedMatrix[2][3] = finalTrans.z;
-	//    interpolatedMatrix[3][3] = finalTrans.w;
-	//    std::cout << glm::to_string(interpolatedMatrix) << std::endl;
+	for (int32_t step = 0; step < NUM_TIME_STEPS; step++)
+	{
+		int32_t next_step = step + 1;
+		float   t         = x * step;
+		float   tnext     = x * next_step;
+		printf("%d %f\n", step, t);
+		if (tnext >= ray_time && ray_time > t)
+		{
+			float d  = (ray_time - t) / x;
+			float x_ = transforms[step][0][3] * (1.0f - d) + transforms[next_step][0][3] * d;
+			float y_ = transforms[step][1][3] * (1.0f - d) + transforms[next_step][1][3] * d;
+			float z_ = transforms[step][2][3] * (1.0f - d) + transforms[next_step][2][3] * d;
+			printf("\t%f (%f, %f, %f)\n", d, x_, y_, z_);
+			break;
+		}
+	}
+	auto xform = transform_at_time(transform_3x4, glm::vec3(isovelocity[0], isovelocity[1], isovelocity[3]), 1.0f);
+	std::cout << glm::to_string(xform) << std::endl;
 
-	//
-	//	// good for now, although in future the 2 transformation components need to be interpolated
-	//	orderedBones[i]->Animation->interpoltaedMatrix[0][3] = finalTrans.x;
-	//	orderedBones[i]->Animation->interpoltaedMatrix[1][3] = finalTrans.y;
-	//	orderedBones[i]->Animation->interpoltaedMatrix[2][3] = finalTrans.z;
-	//	orderedBones[i]->Animation->interpoltaedMatrix[3][3] = finalTrans.w;
+	std::set<float> sorted_times{};
+	for (const auto &ray : rays2)
+	{
+		sorted_times.emplace(ray.time);
+	}
+	for (auto time : sorted_times)
+	{
+		std::cout << time << std::endl;
+	}
 
 	return 0;
 }
