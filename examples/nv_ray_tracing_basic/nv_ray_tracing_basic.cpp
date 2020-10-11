@@ -1960,7 +1960,6 @@ class VulkanExample final
 		obj.geom = createVkGeometryNV(obj.model);
 		createOrUpdateBlas(obj.blas, obj.geom, true);
 		update_object(id, transform, isovelocity);
-		destroyTlas();
 	}
 
 	void add_object(const uint32_t id, const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices)
@@ -2241,7 +2240,7 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-		test_animated_mesh();
+        test_add_two_objects_and_transform2();
 		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}
