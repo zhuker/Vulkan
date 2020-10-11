@@ -38,6 +38,45 @@
 #include "VulkanInitializers.hpp"
 
 static constexpr uint32_t NUM_TIME_STEPS = 10;
+static glm::mat3x4        transform_at_time(const std::vector<glm::mat3x4> &transforms, const float ray_time)
+{
+	assert(ray_time >= 0.0f && ray_time <= 1.0f);
+	if (ray_time == 0.0f)
+		return transforms[0];
+
+	float time_per_step = 1.0f / (NUM_TIME_STEPS - 1);
+
+	for (int32_t step = 0; step < NUM_TIME_STEPS; step++)
+	{
+		int32_t next_step = step + 1;
+		float   t         = time_per_step * step;
+		float   tnext     = time_per_step * next_step;
+		if (tnext >= ray_time && ray_time > t)
+		{
+			const glm::mat3x4 &transform      = transforms[step];
+			const glm::mat3x4 &next_transform = transforms[next_step];
+
+			float x      = transform[0][3];
+			float y      = transform[1][3];
+			float z      = transform[2][3];
+			float next_x = next_transform[0][3];
+			float next_y = next_transform[1][3];
+			float next_z = next_transform[2][3];
+
+			float d  = (ray_time - t) / time_per_step;
+			float x_ = x * (1.0f - d) + next_x * d;
+			float y_ = y * (1.0f - d) + next_y * d;
+			float z_ = z * (1.0f - d) + next_z * d;
+			printf("\t%f (%f, %f, %f)\n", d, x_, y_, z_);
+			glm::mat3x4 copy = transform;
+			copy[0][3]       = x_;
+			copy[1][3]       = y_;
+			copy[2][3]       = z_;
+			return copy;
+		}
+	}
+	return transforms[0];
+}
 
 static glm::mat3x4 transform_at_time(const glm::mat3x4 &initial_transform, const glm::vec3 &isovelocity, const float ray_time)
 {
@@ -151,11 +190,11 @@ struct GeometryInstance
 //RayPy and HitPy have the same memory layout this is to use same buffer for input and output
 struct Ray
 {
-	glm::vec4 origin{};           //point in HitPy
-	glm::vec4 direction{};        //normal in HitPy
-	uint      unused0{};
-	float     max_range_m = 120.0f;        //distance in HitPy
-	float     time        = 0.0f;          //bary_u in HitPy
+	glm::vec4 origin{};                    //point in Hit
+	glm::vec4 direction{};                 //normal in Hit
+	uint      unused0{0};                  //valid in Hit
+	float     max_range_m = 120.0f;        //distance in Hit
+	float     time        = 0.0f;          //bary_u in Hit
 	float     unused1{};
 	uint      unused2{};
 	uint      unused3{};
@@ -239,7 +278,8 @@ std::vector<Ray> rays2 = {
     ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
     ray(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
     ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0)),
-    ray(Vector3f(1.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0), 1.0f)};
+    ray(Vector3f(1.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0), 0.95f)        // motion blur ray
+};
 
 std::vector<Ray> rays = {
     ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
@@ -345,9 +385,7 @@ struct ObjModel
 // Instance of the OBJ
 struct ObjInstance
 {
-	glm::mat3x4 initial_transform{1};        // Position of the instance
-	glm::mat3x4 transform{1};                // Position of the instance at specified time
-	glm::vec3   isovelocity{0};
+	std::vector<glm::mat3x4> transforms;        // Position of the instance at specified time
 };
 
 struct MyObj
@@ -890,8 +928,7 @@ class VulkanExample final
 
 	struct UniformData
 	{
-		glm::mat4 viewInverse;
-		glm::mat4 projInverse;
+		float time = 0.0f;
 	} uniformData;
 	vks::Buffer ubo{};
 
@@ -1094,11 +1131,11 @@ class VulkanExample final
 		vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_NV, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
 	}
 
-	static GeometryInstance createGeometryInstance(const std::pair<uint32_t, MyObj> &obj)
+	static GeometryInstance createGeometryInstance(const std::pair<uint32_t, MyObj> &obj, const float ray_time = 0.0f)
 	{
 		printf("createGeometryInstance %d\n", obj.first);
 		GeometryInstance geometryInstance{};
-		geometryInstance.transform                   = obj.second.instance.transform;
+		geometryInstance.transform                   = transform_at_time(obj.second.instance.transforms, ray_time);
 		geometryInstance.instanceId                  = obj.first;
 		geometryInstance.mask                        = 0xff;
 		geometryInstance.instanceOffset              = 0;
@@ -1159,13 +1196,18 @@ class VulkanExample final
 		}
 	}
 
-	void buildTlas(bool update = false)
+	void updateTlas(const float ray_time = 0.0f)
+	{
+		buildTlas(true, ray_time);
+	}
+
+	void buildTlas(bool update = false, const float ray_time = 0.0f)
 	{
 		vks::Buffer instanceBuffer;
 
 		std::vector<GeometryInstance> geometryInstances;
-		std::transform(objects.begin(), objects.end(), std::back_inserter(geometryInstances), [](const std::pair<uint32_t, MyObj> &obj) {
-			return createGeometryInstance(obj);
+		std::transform(objects.begin(), objects.end(), std::back_inserter(geometryInstances), [ray_time](const std::pair<uint32_t, MyObj> &obj) {
+			return createGeometryInstance(obj, ray_time);
 		});
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
@@ -1532,7 +1574,7 @@ class VulkanExample final
 		}
 	}
 
-	ObjModel createObject(std::vector<Vertex> &vertices, std::vector<uint32_t> &indices)
+	ObjModel createObject(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices)
 	{
 		ObjModel model;
 		model.nbIndices  = static_cast<uint32_t>(indices.size());
@@ -1542,17 +1584,16 @@ class VulkanExample final
 		return model;
 	}
 
-	MyObj createMyObj(std::vector<Vertex> &vertices, std::vector<uint32_t> indices, const glm::mat3x4 &transform = glm::mat3x4{1})
+	MyObj createMyObj(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, const glm::mat3x4 &transform = glm::mat3x4{1})
 	{
 		MyObj obj{};
-		obj.model                      = createObject(vertices, indices);
-		obj.geom                       = createVkGeometryNV(obj.model);
-		obj.instance.initial_transform = transform;
-		obj.instance.transform         = transform;
+		obj.model               = createObject(vertices, indices);
+		obj.geom                = createVkGeometryNV(obj.model);
+		obj.instance.transforms = {transform};
 		return obj;
 	}
 
-	void updateVertices(ObjModel &obj, std::vector<Vertex> &vertices)
+	void updateVertices(ObjModel &obj, const std::vector<Vertex> &vertices)
 	{
 		vks::Buffer stagingBuffer;
 
@@ -1583,7 +1624,7 @@ class VulkanExample final
 		stagingBuffer.destroy();
 	}
 
-	void updateIndices(ObjModel &obj, std::vector<uint32_t> &indices)
+	void updateIndices(ObjModel &obj, const std::vector<uint32_t> &indices)
 	{
 		vks::Buffer stagingBuffer;
 
@@ -1658,9 +1699,9 @@ class VulkanExample final
 
 				//update instance transform
 				auto &obj1 = objects.at(1);
-				obj1.instance.transform[0][0] += 0.01f;
-				obj1.instance.transform[1][1] += 0.01f;
-				buildTlas(true);
+				obj1.instance.transforms[0][0] += 0.01f;
+				obj1.instance.transforms[1][1] += 0.01f;
+				updateTlas();
 			}
 			else
 			{
@@ -2079,39 +2120,72 @@ class VulkanExample final
 		assert_near(expecteds2, hits_animated);
 	}
 
-	void test_pre_motion_blur()
+	void uploadRays(const std::vector<Ray> &rays_)
 	{
-		const VkDeviceSize bufferSize = width * height * sizeof(Ray);
-		if (hostBuffer.mapped == nullptr) {
+		const auto         maxRays    = width * height;
+		const VkDeviceSize bufferSize = maxRays * sizeof(Ray);
+		if (hostBuffer.mapped == nullptr)
+		{
 			VK_CHECK_RESULT(hostBuffer.map());
 		}
 		assert(hostBuffer.mapped);
 
 		Ray *computeInput = (Ray *) hostBuffer.mapped;
 
-		for (size_t i = 0; i < width * height; i++)
+		for (size_t i = 0; i < maxRays; i++)
 		{
-			computeInput[i] = rays2[i % rays2.size()];
+			computeInput[i] = rays_[i % rays_.size()];
 		}
 		hostBuffer.flush();
 
 		VkBufferCopy copyRegion = {0, 0, bufferSize};
 		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
+	}
 
+	void add_object(const uint32_t id, const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices)
+	{
+		assert(objects.count(id) == 0);
+		objects.emplace(std::make_pair(id, createMyObj(vertices, indices)));
+		auto &obj0 = objects.at(id);
+		createOrUpdateBlas(obj0.blas, obj0.geom);
+	}
+
+	void update_object(const uint32_t id, const glm::mat3x4 &transform, const glm::vec3 &isovelocity = glm::vec3{0})
+	{
+		assert(objects.count(id) == 1);
+		auto &obj = objects.at(id);
+		obj.instance.transforms.resize(NUM_TIME_STEPS);
+
+		for (unsigned int t = 0; t < NUM_TIME_STEPS; t++)
+		{
+			glm::mat3x4 copy = transform;
+
+			// Apply linear velocity for now, we don't have angular velocity supported
+			copy[0][3] += (isovelocity[0] * 0.1f * t / NUM_TIME_STEPS);
+			copy[1][3] += (isovelocity[1] * 0.1f * t / NUM_TIME_STEPS);
+			copy[2][3] += (isovelocity[2] * 0.1f * t / NUM_TIME_STEPS);
+			obj.instance.transforms[t] = copy;
+		}
+	}
+
+	void test_pre_motion_blur()
+	{
 		glm::mat3x4 transforms = {
 		    1.0f, 0.0f, 0.0f, 0.855f,
 		    0.0f, 1.0f, 0.0f, 0.0f,
 		    0.0f, 0.0f, 1.0f, 10.0f};
 
-		objects.emplace(std::make_pair(0, createMyObj(vertices0, indices0, transforms)));
-		auto &obj0 = objects.at(0);
-		createOrUpdateBlas(obj0.blas, obj0.geom);
+		add_object(0, vertices0, indices0);
+		update_object(0, transforms);
+		uploadRays(rays2);
+
 		buildTlas();
 		if (pipeline == VK_NULL_HANDLE)
 		{
 			createRayTracingPipeline();
 			createShaderBindingTable();
 		}
+		//must rebuild desc sets and command buffers when adding object
 		createDescriptorSets();
 		destroyCommandBuffers();
 		createCommandBuffers();
@@ -2125,23 +2199,81 @@ class VulkanExample final
 		assert_near(expecteds, valid_hits);
 	}
 
+	std::vector<Hit> trace_rays(const std::vector<Ray> &rays_)
+	{
+		uploadRays(rays_);
+		std::set<float> sorted_ray_times;
+		for (const auto &ray : rays_)
+		{
+			sorted_ray_times.emplace(ray.time);
+		}
+		assert(!sorted_ray_times.empty());
+
+		for (const auto ray_time : sorted_ray_times)
+		{
+			printf("ray time %f\n", ray_time);
+			updateTlas(ray_time);
+			uniformData.time = ray_time;
+			memcpy(ubo.mapped, &uniformData, sizeof(uniformData));
+
+			const auto &valid_hits_ = get_valid_hits(draw(), rays_.size());
+			printf("valid hits at time %f\n", ray_time);
+			for (const auto &hit : valid_hits_)
+			{
+				std::cout << to_string(hit) << std::endl;
+			}
+		}
+		return get_valid_hits((Hit *) hostBuffer.mapped, rays_.size());
+	}
+
 	void test_motion_blur()
 	{
-		glm::mat3x4 transform_3x4 = {
+		add_object(0, vertices0, indices0);
+		glm::mat3x4 transform = {
 		    1.0f, 0.0f, 0.0f, 0.0f,
 		    0.0f, 1.0f, 0.0f, 0.0f,
 		    0.0f, 0.0f, 1.0f, 10.0f};
-		std::vector<float> isovelocity = {10.0f, 0, 0};
-		for (uint32_t t = 0; t < NUM_TIME_STEPS; t++)
-		{
-			// Create copy of transform
-			glm::mat3x4 transform_3x4_copy = transform_3x4;
+		glm::vec3 isovelocity = {10, 0, 0};
+		update_object(0, transform, isovelocity);
+		std::cout << glm::to_string(objects.at(0).instance.transforms[0]) << std::endl;
 
-			// Apply linear velocity for now, we don't have angular velocity supported
-			transform_3x4_copy[0][3] += (isovelocity[0] * 0.1f * t / NUM_TIME_STEPS);
-			transform_3x4_copy[1][3] += (isovelocity[1] * 0.1f * t / NUM_TIME_STEPS);
-			transform_3x4_copy[2][3] += (isovelocity[2] * 0.1f * t / NUM_TIME_STEPS);
+		buildTlas();        //if object was added - rebuild tlas
+
+		if (pipeline == VK_NULL_HANDLE)
+		{
+			createRayTracingPipeline();
+			createShaderBindingTable();
 		}
+		//must rebuild desc sets and command buffers when adding object
+		createDescriptorSets();
+		destroyCommandBuffers();
+		createCommandBuffers();
+		buildCommandBuffers();
+		vkDeviceWaitIdle(device);
+
+		auto               valid_hits       = trace_rays(rays);
+		std::vector<HitPy> expecteds_before = {
+		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
+		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, 0.0, 0.0, ignore, 0, 0, 0, true},
+		};
+		assert_near(expecteds_before, valid_hits);
+
+		valid_hits                   = trace_rays(rays2);
+		std::vector<HitPy> expecteds = {
+		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5f, ignore, 0, 0, 0, true},
+		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0f, ignore, 0, 0, 0, true},
+		    {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.355f, ignore, 0, 1, 0, true},
+		};
+		assert_near(expecteds, valid_hits);
+
+		update_object(0, transform, glm::vec3{0});
+
+		valid_hits                    = trace_rays(rays2);
+		std::vector<HitPy> expecteds2 = {
+		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
+		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0, ignore, 0, 0, 0, true},
+		};
+		assert_near(expecteds2, valid_hits);
 	}
 
 	void main()
@@ -2157,7 +2289,7 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-		test_pre_motion_blur();
+		test_motion_blur();
 		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}
