@@ -239,7 +239,7 @@ std::vector<Ray> rays2 = {
     ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
     ray(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
     ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0)),
-    ray(Vector3f(1.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0), 0.98f)};
+    ray(Vector3f(1.5, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0), 1.0f)};
 
 std::vector<Ray> rays = {
     ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
@@ -890,7 +890,8 @@ class VulkanExample final
 
 	struct UniformData
 	{
-		float time;
+		glm::mat4 viewInverse;
+		glm::mat4 projInverse;
 	} uniformData;
 	vks::Buffer ubo{};
 
@@ -957,28 +958,19 @@ class VulkanExample final
 	void createStorageBuffer()
 	{
 		const VkDeviceSize bufferSize = width * height * sizeof(Ray);
-		std::vector<Ray>   computeInput(width * height);
-
-		for (size_t i = 0; i < computeInput.size(); i++)
-		{
-			computeInput[i] = rays2[i % rays2.size()];
-		}
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 		    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
 		    &hostBuffer,
-		    computeInput.size() * sizeof(Ray),
-		    computeInput.data()));
+		    bufferSize,
+		    nullptr));
 
 		VK_CHECK_RESULT(vulkanDevice->createBuffer(
 		    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 		    &deviceBuffer,
 		    bufferSize));
-
-		VkBufferCopy copyRegion = {0, 0, bufferSize};
-		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
 	}
 	/*
 		The bottom level acceleration structure contains the scene's geometry (vertices, triangles)
@@ -1626,7 +1618,21 @@ class VulkanExample final
 	int64_t  last_update_sec = -1;
 	int64_t  start           = current_time_msec() / 1000;
 
-	std::vector<Hit> draw()
+	static std::vector<Hit> get_valid_hits(Hit *hits, uint32_t raycount)
+	{
+		std::vector<Hit> valid_hits{};
+		for (int i = 0; i < raycount; i++)
+		{
+			auto hit = &hits[i];
+			if (hit->valid)
+			{
+				valid_hits.push_back(hits[i]);
+			}
+		}
+		return valid_hits;
+	}
+
+	Hit *draw()
 	{
 		int64_t start_frame = current_time_msec();
 		prepareFrame();
@@ -1700,27 +1706,7 @@ class VulkanExample final
 		//		memcpy(computeOutput.data(), hostBuffer.mapped, hostBuffer.size);
 		// Copy to output
 		Hit *computeOutput = static_cast<Hit *>(hostBuffer.mapped);
-		Ray *computeInput  = static_cast<Ray *>(hostBuffer.mapped);
-		int  cnt           = 0;
-		Hit  hit0          = computeOutput[0];
-
-		std::vector<Hit> valid_hits{};
-		for (int i = 0; i < width * height; i++)
-		{
-			auto hit = &computeOutput[i];
-			if (hit->valid)
-				cnt++;
-			if (hit->valid && i < rays.size())
-			{
-				valid_hits.push_back(computeOutput[i]);
-			}
-			//			auto ray = &computeInput[i];
-			//			*ray     = rays[i % rays.size()];
-		}
-		printf("hits %d\n", cnt);
-
-		//		test_add_two_objects_and_transform1(valid_hits);
-		return valid_hits;
+		return computeOutput;
 		//		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
 		//		hostBuffer.unmap();
 		//		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
@@ -2020,7 +2006,7 @@ class VulkanExample final
 		buildCommandBuffers();
 		vkDeviceWaitIdle(device);
 
-		auto valid_hits = draw();
+		auto valid_hits = get_valid_hits(draw(), rays.size());
 		// clang-format off
         std::vector<HitPy> expecteds = {
             {{0.000001f, 0.00, 0.05f}, {-0.0, 0.0, 1.0}, 1.95f, 0.49999f, 0.00001f, ignore, 1, 11, 0, true},
@@ -2040,7 +2026,7 @@ class VulkanExample final
 		buildCommandBuffers();
 		vkDeviceWaitIdle(device);
 
-		auto               valid_hits2 = draw();
+		auto               valid_hits2 = get_valid_hits(draw(), rays.size());
 		std::vector<HitPy> expecteds2  = {
             {{0.000001f, 0.0, -10.0}, {0.0, 0.0, -1.0}, 12.0, 0.0, 0.000001f, ignore, 0, 0, 0, true}};
 		assert_near(expecteds2, valid_hits2);
@@ -2068,7 +2054,7 @@ class VulkanExample final
 		buildCommandBuffers();
 		vkDeviceWaitIdle(device);
 
-		auto               valid_hits = draw();
+		auto               valid_hits = get_valid_hits(draw(), rays.size());
 		std::vector<HitPy> expecteds  = {
             {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
             {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0, ignore, 0, 0, 0, true},
@@ -2087,7 +2073,7 @@ class VulkanExample final
 		obj0.geom = createVkGeometryNV(obj0.model);
 		createOrUpdateBlas(obj0.blas, obj0.geom, true);
 		buildTlas(true);
-		auto               hits_animated = draw();
+		auto               hits_animated = get_valid_hits(draw(), rays.size());
 		std::vector<HitPy> expecteds2    = {
             {{0.0f, 0.0f, 10.0f}, {0.0f, 0.0f, -2.5f}, 10.0f, -0.0f, 0.8f, ignore, 0, 0, 0, true}};
 		assert_near(expecteds2, hits_animated);
@@ -2095,8 +2081,25 @@ class VulkanExample final
 
 	void test_pre_motion_blur()
 	{
+		const VkDeviceSize bufferSize = width * height * sizeof(Ray);
+		if (hostBuffer.mapped == nullptr) {
+			VK_CHECK_RESULT(hostBuffer.map());
+		}
+		assert(hostBuffer.mapped);
+
+		Ray *computeInput = (Ray *) hostBuffer.mapped;
+
+		for (size_t i = 0; i < width * height; i++)
+		{
+			computeInput[i] = rays2[i % rays2.size()];
+		}
+		hostBuffer.flush();
+
+		VkBufferCopy copyRegion = {0, 0, bufferSize};
+		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
+
 		glm::mat3x4 transforms = {
-		    1.0f, 0.0f, 0.0f, 0.9f,
+		    1.0f, 0.0f, 0.0f, 0.855f,
 		    0.0f, 1.0f, 0.0f, 0.0f,
 		    0.0f, 0.0f, 1.0f, 10.0f};
 
@@ -2115,9 +2118,9 @@ class VulkanExample final
 		buildCommandBuffers();
 		vkDeviceWaitIdle(device);
 
-		auto               valid_hits = draw();
+		auto               valid_hits = get_valid_hits(draw(), rays2.size());
 		std::vector<HitPy> expecteds  = {
-            {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.4f, ignore, 0, 1, 0, true},
+            {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.355f, ignore, 0, 1, 0, true},
         };
 		assert_near(expecteds, valid_hits);
 	}
@@ -2160,14 +2163,14 @@ class VulkanExample final
 	}
 };
 
-int main1(const int argc, const char *argv[])
+int main(const int argc, const char *argv[])
 {
 	VulkanExample vulkanExample{};
 	vulkanExample.main();
 	return 0;
 }
 
-int main()
+int main1()
 {
 	glm::mat3x4 transform_3x4 = {
 	    1.0f, 0.0f, 0.0f, 0.0f,
@@ -2211,7 +2214,7 @@ int main()
 			break;
 		}
 	}
-	auto xform = transform_at_time(transform_3x4, glm::vec3(isovelocity[0], isovelocity[1], isovelocity[3]), 1.0f);
+	auto xform = transform_at_time(transform_3x4, glm::vec3(isovelocity[0], isovelocity[1], isovelocity[3]), 0.95f);
 	std::cout << glm::to_string(xform) << std::endl;
 
 	std::set<float> sorted_times{};
