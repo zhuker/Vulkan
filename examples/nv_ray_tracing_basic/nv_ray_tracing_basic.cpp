@@ -322,14 +322,13 @@ static void assert_near(const HitPy &expected, const Hit &actual)
 
 static void assert_near(const std::vector<HitPy> &expecteds, const std::vector<Hit> &actuals)
 {
-	for (const auto &expected : expecteds)
+	if (expecteds.size() != actuals.size())
 	{
-		printf("e: %s\n", to_string(expected).c_str());
-	}
+		for (const auto &expected : expecteds)
+			printf("e: %s\n", to_string(expected).c_str());
 
-	for (const auto &actual : actuals)
-	{
-		printf("a: %s\n", to_string(actual).c_str());
+		for (const auto &actual : actuals)
+			printf("a: %s\n", to_string(actual).c_str());
 	}
 
 	ASSERT_EQ(expecteds.size(), actuals.size());
@@ -426,25 +425,6 @@ static void test_add_two_objects_and_transform1(const std::vector<Hit> &valid_hi
 	assert_near(expecteds, valid_hits);
 }
 
-static void test_add_two_objects(const std::vector<Hit> &valid_hits)
-{
-	//        objects.emplace(std::make_pair(0, createMyObj(vertices1, indices1)));
-	//        objects.emplace(std::make_pair(1, createMyObj(vertices2, indices2)));
-	assert(7 == valid_hits.size());
-
-	// clang-format off
-    std::vector<HitPy> expecteds = {
-        {{0.000001f,0.0, 0.50}, {-0.0, 0.0, 1.0}, 1.5, 0.5, 0.000001f, ignore, 1, 11, 0, true},
-        {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 1.5, 0.5, 0.5, ignore, 1, 6, 0, true},
-        {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
-        {{0.500000, 0.5,-0.50}, { 0.0, 0.0,-1.0}, 0.5,-0.0, 1.0, ignore, 1, 9, 0, true},
-        {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
-        {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 0.5, 0.5, 0.5, ignore, 1, 6, 0, true},
-        {{0.000000, 0.0, 0.50}, { 0.0, 0.0, 1.0}, 0.5, 0.5, 0.5, ignore, 1, 10, 0, true},
-    };
-	// clang-format on
-	assert_near(expecteds, valid_hits);
-}
 
 static void test_simple_trace(const std::vector<Hit> &valid_hits)
 {
@@ -932,10 +912,10 @@ class VulkanExample final
 	} uniformData;
 	vks::Buffer ubo{};
 
-	VkPipeline            pipeline = VK_NULL_HANDLE;
-	VkPipelineLayout      pipelineLayout{};
-	VkDescriptorSet       descriptorSet{};
-	VkDescriptorSetLayout descriptorSetLayout{};
+	VkPipeline            pipeline            = VK_NULL_HANDLE;
+	VkPipelineLayout      pipelineLayout      = VK_NULL_HANDLE;
+	VkDescriptorSet       descriptorSet       = VK_NULL_HANDLE;
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
 
 	void destroyObjectInternal(MyObj &obj)
 	{
@@ -1961,6 +1941,25 @@ class VulkanExample final
 		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
 	}
 
+	void destroyTlas()
+	{
+		if (topLevelAS.memory != nullptr)
+			vkFreeMemory(device, topLevelAS.memory, nullptr);
+		if (topLevelAS.accelerationStructure != nullptr)
+			vkDestroyAccelerationStructureNV(device, topLevelAS.accelerationStructure, nullptr);
+
+		topLevelAS = {};
+	}
+
+	void destroyDescPool()
+	{
+		if (descriptorPool != VK_NULL_HANDLE)
+		{
+			vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+			descriptorPool = VK_NULL_HANDLE;
+		}
+	}
+
   public:
 	VulkanExample()
 	{
@@ -1992,8 +1991,8 @@ class VulkanExample final
 		vkDestroyImageView(device, storageImage.view, nullptr);
 		vkDestroyImage(device, storageImage.image, nullptr);
 		vkFreeMemory(device, storageImage.memory, nullptr);
-		vkFreeMemory(device, topLevelAS.memory, nullptr);
-		vkDestroyAccelerationStructureNV(device, topLevelAS.accelerationStructure, nullptr);
+		destroyTlas();
+
 		for (auto &obj : objects)
 		{
 			destroyObjectInternal(obj.second);
@@ -2003,10 +2002,7 @@ class VulkanExample final
 
 		// Clean up Vulkan resources
 		swapChain.cleanup();
-		if (descriptorPool != VK_NULL_HANDLE)
-		{
-			vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-		}
+		destroyDescPool();
 		destroyCommandBuffers();
 		vkDestroyRenderPass(device, renderPass, nullptr);
 		for (auto &frameBuffer : frameBuffers)
@@ -2038,6 +2034,145 @@ class VulkanExample final
 		vkDestroyInstance(instance, nullptr);
 		xcb_destroy_window(connection, window);
 		xcb_disconnect(connection);
+	}
+
+	void update_animated_object(const uint32_t id, const std::vector<Vertex> &vertices, const glm::mat3x4 &transform, const glm::vec3 &isovelocity = glm::vec3{0})
+	{
+		assert(objects.count(id) == 1);
+		auto &obj = objects.at(id);
+		assert(vertices.size() == obj.model.nbVertices);        //cant increase or decrease vertex count
+		updateVertices(obj.model, vertices);
+		obj.geom = createVkGeometryNV(obj.model);
+		createOrUpdateBlas(obj.blas, obj.geom, true);
+		update_object(id, transform, isovelocity);
+	}
+
+	void add_object(const uint32_t id, const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices)
+	{
+		assert(objects.count(id) == 0);
+		objects.emplace(std::make_pair(id, createMyObj(vertices, indices)));
+		auto &obj0 = objects.at(id);
+		createOrUpdateBlas(obj0.blas, obj0.geom);
+
+		// adding or deleting an object requires full tlas rebuild
+		destroyTlas();
+		destroyDescPool();
+	}
+
+	void update_object(const uint32_t id, const glm::mat3x4 &transform, const glm::vec3 &isovelocity = glm::vec3{0})
+	{
+		assert(objects.count(id) == 1);
+		auto &obj = objects.at(id);
+		obj.instance.transforms.resize(NUM_TIME_STEPS);
+
+		for (unsigned int t = 0; t < NUM_TIME_STEPS; t++)
+		{
+			glm::mat3x4 copy = transform;
+
+			// Apply linear velocity for now, we don't have angular velocity supported
+			copy[0][3] += (isovelocity[0] * 0.1f * t / NUM_TIME_STEPS);
+			copy[1][3] += (isovelocity[1] * 0.1f * t / NUM_TIME_STEPS);
+			copy[2][3] += (isovelocity[2] * 0.1f * t / NUM_TIME_STEPS);
+			obj.instance.transforms[t] = copy;
+		}
+	}
+
+	std::vector<Hit> trace_rays(const std::vector<Ray> &rays_)
+	{
+		if (topLevelAS.accelerationStructure == nullptr)
+		{
+			buildTlas();
+		}
+		if (pipeline == VK_NULL_HANDLE)
+		{
+			createRayTracingPipeline();
+			createShaderBindingTable();
+		}
+		if (descriptorPool == VK_NULL_HANDLE)
+		{
+			createDescriptorSets();
+			destroyCommandBuffers();
+			createCommandBuffers();
+			buildCommandBuffers();
+			vkDeviceWaitIdle(device);
+		}
+
+		uploadRays(rays_);
+		std::set<float> sorted_ray_times;
+		for (const auto &ray : rays_)
+		{
+			sorted_ray_times.emplace(ray.time);
+		}
+		assert(!sorted_ray_times.empty());
+
+		for (const auto ray_time : sorted_ray_times)
+		{
+			printf("ray time %f\n", ray_time);
+			updateTlas(ray_time);
+			uniformData.time = ray_time;
+			memcpy(ubo.mapped, &uniformData, sizeof(uniformData));
+
+			const auto &valid_hits_ = get_valid_hits(draw(), rays_.size());
+			printf("valid hits at time %f\n", ray_time);
+			for (const auto &hit : valid_hits_)
+			{
+				std::cout << to_string(hit) << std::endl;
+			}
+		}
+		return get_valid_hits((Hit *) hostBuffer.mapped, rays_.size());
+	}
+
+	void test_pre_motion_blur()
+	{
+		glm::mat3x4 transforms = {
+		    1.0f, 0.0f, 0.0f, 0.855f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, 10.0f};
+
+		add_object(0, vertices0, indices0);
+		update_object(0, transforms);
+
+		auto               valid_hits = trace_rays(rays2);
+		std::vector<HitPy> expecteds  = {
+            {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.355f, ignore, 0, 1, 0, true},
+        };
+		assert_near(expecteds, valid_hits);
+	}
+
+	void test_motion_blur()
+	{
+		add_object(0, vertices0, indices0);
+		glm::mat3x4 transform = {
+		    1.0f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, 10.0f};
+		glm::vec3 isovelocity = {10, 0, 0};
+		update_object(0, transform, isovelocity);
+		std::cout << glm::to_string(objects.at(0).instance.transforms[0]) << std::endl;
+
+		auto               valid_hits       = trace_rays(rays);
+		std::vector<HitPy> expecteds_before = {
+		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
+		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, 0.0, 0.0, ignore, 0, 0, 0, true},
+		};
+		assert_near(expecteds_before, valid_hits);
+
+		valid_hits                   = trace_rays(rays2);
+		std::vector<HitPy> expecteds = {
+		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5f, ignore, 0, 0, 0, true},
+		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0f, ignore, 0, 0, 0, true},
+		    {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.355f, ignore, 0, 1, 0, true},
+		};
+		assert_near(expecteds, valid_hits);
+
+		update_object(0, transform, glm::vec3{0});
+
+		valid_hits                    = trace_rays(rays2);
+		std::vector<HitPy> expecteds2 = {
+		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
+		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0, ignore, 0, 0, 0, true},
+		};
+		assert_near(expecteds2, valid_hits);
 	}
 
 	void test_add_two_objects_and_transform2()
@@ -2101,23 +2236,10 @@ class VulkanExample final
 		    1.0f, 0.0f, 0.0f, 0.0f,
 		    0.0f, 1.0f, 0.0f, 0.0f,
 		    0.0f, 0.0f, 1.0f, 10.0f};
+		add_object(0, vertices0, indices0);
+		update_object(0, transforms);
 
-		objects.emplace(std::make_pair(0, createMyObj(vertices0, indices0, transforms)));
-		auto &obj0 = objects.at(0);
-		createOrUpdateBlas(obj0.blas, obj0.geom);
-		buildTlas();
-		if (pipeline == VK_NULL_HANDLE)
-		{
-			createRayTracingPipeline();
-			createShaderBindingTable();
-		}
-		createDescriptorSets();
-		destroyCommandBuffers();
-		createCommandBuffers();
-		buildCommandBuffers();
-		vkDeviceWaitIdle(device);
-
-		auto               valid_hits = get_valid_hits(draw(), rays.size());
+		auto               valid_hits = trace_rays(rays);
 		std::vector<HitPy> expecteds  = {
             {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
             {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0, ignore, 0, 0, 0, true},
@@ -2126,157 +2248,43 @@ class VulkanExample final
 
 		// clang-format off
         std::vector<Vertex> vertices_animated{
-            {-1.0f,-1.0f,  0.0f, 0.0f,},
-            {-1.0f, 1.0f,  0.0f, 0.0f,},
-            {0.25f, 0.25f, 0.0f, 0.0f,},
+            {-1.0f,-1.0f,  0.0f, 0.0f},
+            {-1.0f, 1.0f,  0.0f, 0.0f},
+            {0.25f, 0.25f, 0.0f, 0.0f},
             {0.25f, 0.25f, 1.0f, 0.0f},
         };
 		// clang-format on
-		updateVertices(obj0.model, vertices0);
-		obj0.geom = createVkGeometryNV(obj0.model);
-		createOrUpdateBlas(obj0.blas, obj0.geom, true);
-		buildTlas(true);
-		auto               hits_animated = get_valid_hits(draw(), rays.size());
+		glm::vec3 isovelocity_animated = {0, 0, 0};
+		update_animated_object(0, vertices_animated, transforms, isovelocity_animated);
+
+		auto               hits_animated = trace_rays(rays);
 		std::vector<HitPy> expecteds2    = {
             {{0.0f, 0.0f, 10.0f}, {0.0f, 0.0f, -2.5f}, 10.0f, -0.0f, 0.8f, ignore, 0, 0, 0, true}};
 		assert_near(expecteds2, hits_animated);
 	}
 
-	void add_object(const uint32_t id, const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices)
-	{
-		assert(objects.count(id) == 0);
-		objects.emplace(std::make_pair(id, createMyObj(vertices, indices)));
-		auto &obj0 = objects.at(id);
-		createOrUpdateBlas(obj0.blas, obj0.geom);
-	}
-
-	void update_object(const uint32_t id, const glm::mat3x4 &transform, const glm::vec3 &isovelocity = glm::vec3{0})
-	{
-		assert(objects.count(id) == 1);
-		auto &obj = objects.at(id);
-		obj.instance.transforms.resize(NUM_TIME_STEPS);
-
-		for (unsigned int t = 0; t < NUM_TIME_STEPS; t++)
-		{
-			glm::mat3x4 copy = transform;
-
-			// Apply linear velocity for now, we don't have angular velocity supported
-			copy[0][3] += (isovelocity[0] * 0.1f * t / NUM_TIME_STEPS);
-			copy[1][3] += (isovelocity[1] * 0.1f * t / NUM_TIME_STEPS);
-			copy[2][3] += (isovelocity[2] * 0.1f * t / NUM_TIME_STEPS);
-			obj.instance.transforms[t] = copy;
-		}
-	}
-
-	void test_pre_motion_blur()
-	{
-		glm::mat3x4 transforms = {
-		    1.0f, 0.0f, 0.0f, 0.855f,
-		    0.0f, 1.0f, 0.0f, 0.0f,
-		    0.0f, 0.0f, 1.0f, 10.0f};
-
+    void test_add_two_objects()
+    {
 		add_object(0, vertices0, indices0);
-		update_object(0, transforms);
-		uploadRays(rays2);
+        add_object(1, vertices1, indices1);
 
-		buildTlas();
-		if (pipeline == VK_NULL_HANDLE)
-		{
-			createRayTracingPipeline();
-			createShaderBindingTable();
-		}
-		//must rebuild desc sets and command buffers when adding object
-		createDescriptorSets();
-		destroyCommandBuffers();
-		createCommandBuffers();
-		buildCommandBuffers();
-		vkDeviceWaitIdle(device);
+		auto valid_hits = trace_rays(rays);
 
-		auto               valid_hits = get_valid_hits(draw(), rays2.size());
-		std::vector<HitPy> expecteds  = {
-            {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.355f, ignore, 0, 1, 0, true},
+        // clang-format off
+        std::vector<HitPy> expecteds = {
+            {{0.000001f,0.0, 0.50}, {-0.0, 0.0, 1.0}, 1.5, 0.5, 0.000001f, ignore, 1, 11, 0, true},
+            {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 1.5, 0.5, 0.5, ignore, 1, 6, 0, true},
+            {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
+            {{0.500000, 0.5,-0.50}, { 0.0, 0.0,-1.0}, 0.5,-0.0, 1.0, ignore, 1, 9, 0, true},
+            {{0.500000, 0.0, 0.00}, { 1.0, 0.0, 0.0}, 0.5, 0.5, 0.5, ignore, 1, 0, 0, true},
+            {{0.000000, 0.5, 0.00}, { 0.0, 1.0,-0.0}, 0.5, 0.5, 0.5, ignore, 1, 6, 0, true},
+            {{0.000000, 0.0, 0.50}, { 0.0, 0.0, 1.0}, 0.5, 0.5, 0.5, ignore, 1, 10, 0, true},
         };
-		assert_near(expecteds, valid_hits);
-	}
+        // clang-format on
+        assert_near(expecteds, valid_hits);
+    }
 
-	std::vector<Hit> trace_rays(const std::vector<Ray> &rays_)
-	{
-		uploadRays(rays_);
-		std::set<float> sorted_ray_times;
-		for (const auto &ray : rays_)
-		{
-			sorted_ray_times.emplace(ray.time);
-		}
-		assert(!sorted_ray_times.empty());
-
-		for (const auto ray_time : sorted_ray_times)
-		{
-			printf("ray time %f\n", ray_time);
-			updateTlas(ray_time);
-			uniformData.time = ray_time;
-			memcpy(ubo.mapped, &uniformData, sizeof(uniformData));
-
-			const auto &valid_hits_ = get_valid_hits(draw(), rays_.size());
-			printf("valid hits at time %f\n", ray_time);
-			for (const auto &hit : valid_hits_)
-			{
-				std::cout << to_string(hit) << std::endl;
-			}
-		}
-		return get_valid_hits((Hit *) hostBuffer.mapped, rays_.size());
-	}
-
-	void test_motion_blur()
-	{
-		add_object(0, vertices0, indices0);
-		glm::mat3x4 transform = {
-		    1.0f, 0.0f, 0.0f, 0.0f,
-		    0.0f, 1.0f, 0.0f, 0.0f,
-		    0.0f, 0.0f, 1.0f, 10.0f};
-		glm::vec3 isovelocity = {10, 0, 0};
-		update_object(0, transform, isovelocity);
-		std::cout << glm::to_string(objects.at(0).instance.transforms[0]) << std::endl;
-
-		buildTlas();        //if object was added - rebuild tlas
-
-		if (pipeline == VK_NULL_HANDLE)
-		{
-			createRayTracingPipeline();
-			createShaderBindingTable();
-		}
-		//must rebuild desc sets and command buffers when adding object
-		createDescriptorSets();
-		destroyCommandBuffers();
-		createCommandBuffers();
-		buildCommandBuffers();
-		vkDeviceWaitIdle(device);
-
-		auto               valid_hits       = trace_rays(rays);
-		std::vector<HitPy> expecteds_before = {
-		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
-		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, 0.0, 0.0, ignore, 0, 0, 0, true},
-		};
-		assert_near(expecteds_before, valid_hits);
-
-		valid_hits                   = trace_rays(rays2);
-		std::vector<HitPy> expecteds = {
-		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5f, ignore, 0, 0, 0, true},
-		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0f, ignore, 0, 0, 0, true},
-		    {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.355f, ignore, 0, 1, 0, true},
-		};
-		assert_near(expecteds, valid_hits);
-
-		update_object(0, transform, glm::vec3{0});
-
-		valid_hits                    = trace_rays(rays2);
-		std::vector<HitPy> expecteds2 = {
-		    {{0.5, 0.5, 10.0}, {0.0, 0.0, -1.0}, 11.0, 0.5, 0.5, ignore, 0, 0, 0, true},
-		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0, ignore, 0, 0, 0, true},
-		};
-		assert_near(expecteds2, valid_hits);
-	}
-
-	void main()
+    void main()
 	{
 		initVulkan();
 		setupWindow();
@@ -2289,7 +2297,7 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-		test_motion_blur();
+        test_add_two_objects();
 		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}
