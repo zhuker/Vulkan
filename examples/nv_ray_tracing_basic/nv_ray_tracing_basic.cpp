@@ -2128,6 +2128,8 @@ class VulkanExample final
 		// clang-format on
 		assert_near(expecteds, valid_hits);
 
+		culling_enabled = false;
+
 		//delete
 		delete_object(1);
 
@@ -2240,7 +2242,7 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-        test_add_two_objects_and_transform2();
+		test_add_two_objects_and_transform2();
 		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}
