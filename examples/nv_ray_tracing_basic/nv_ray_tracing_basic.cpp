@@ -285,10 +285,11 @@ std::vector<Ray> rays = {
     ray(Vector3f(0.000001, 0.0, 2.0), Vector3f(0.0, 0.0, -1.0)),
     ray(Vector3f(0.000001, 2.0, 0.0), Vector3f(0.0, -1.0, 0.0)),
     ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
-    ray(Vector3f(0.499999, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
+    ray(Vector3f(0.4, 0.5, -1.0), Vector3f(0.0, 0.0, 1.0)),
     ray(Vector3f(0.0, 0.0, 0.000001), Vector3f(1.0, 0.0, 0.0)),
     ray(Vector3f(0.000001, 0.0, 0.0), Vector3f(0.0, 1.0, 0.0)),
-    ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0))};
+    ray(Vector3f(0.0, 0.000001, 0.0), Vector3f(0.0, 0.0, 1.0))
+};
 
 static inline void ASSERT_NEAR(float expected, float actual, float epsilon)
 {
@@ -2262,10 +2263,45 @@ class VulkanExample final
 		assert_near(expecteds, valid_hits);
 		_test_teardown();
 	}
+
+	void test_embree_api()
+	{
+		_test_setup();
+		glm::mat3x4 transforms = {
+		    0.1f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 0.1f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 0.1f, 10.0f};
+
+		add_object(0, vertices0, indices0);
+		add_object(1, vertices1, indices1);
+		update_object(0, transforms);
+
+		glm::mat3x4 transforms2 = {
+		    1.0f, 0.0f, 0.0f, 0.0f,
+		    0.0f, 1.0f, 0.0f, 0.0f,
+		    0.0f, 0.0f, 1.0f, -10.0f};
+		update_object(1, transforms2);
+		auto valid_hits = trace_rays(rays);
+
+        // clang-format off
+        std::vector<HitPy> expecteds = {
+            {{0.000001f,0.0, -9.499999f}, {-0.0, 0.0, 1.0}, 11.499999f, 0.499999f, 0.000001f, ignore, 1, 11, 0, true},
+            {{0.500000, 0.5,  9.999999f}, { 0.0, 0.0,-1.0}, 10.999999f, 0.500000f, 0.500000f, ignore, 0, 0, 0, true},
+            {{0.000000, 0.0,  9.999999f}, { 0.0, 0.0,-1.0},  9.999999f,-0.000000f,-0.000000f, ignore, 0, 0, 0, true},
+        };
+        // clang-format on
+		assert_near(expecteds, valid_hits);
+
+		_test_teardown();
+	}
 };
 
 int main(const int argc, const char *argv[])
 {
+    {
+        VulkanExample vulkanExample{};
+        vulkanExample.test_embree_api();
+    }
 	{
 		VulkanExample vulkanExample{};
 		vulkanExample.test_add_two_objects();
@@ -2273,25 +2309,25 @@ int main(const int argc, const char *argv[])
 	{
 		VulkanExample vulkanExample{};
 		vulkanExample.test_add_two_objects_and_transform1();
-    }
-    {
-        VulkanExample vulkanExample{};
+	}
+	{
+		VulkanExample vulkanExample{};
 		vulkanExample.test_add_two_objects_and_transform2();
-    }
-    {
-        VulkanExample vulkanExample{};
+	}
+	{
+		VulkanExample vulkanExample{};
 		vulkanExample.test_pre_motion_blur();
-    }
-    {
-        VulkanExample vulkanExample{};
+	}
+	{
+		VulkanExample vulkanExample{};
 		vulkanExample.test_motion_blur();
-    }
-    {
-        VulkanExample vulkanExample{};
+	}
+	{
+		VulkanExample vulkanExample{};
 		vulkanExample.test_animated_mesh();
-    }
-    {
-        VulkanExample vulkanExample{};
+	}
+	{
+		VulkanExample vulkanExample{};
 		vulkanExample.test_simple_trace();
 	}
 	return 0;
