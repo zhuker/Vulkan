@@ -2050,8 +2050,29 @@ class VulkanExample final
 		return get_valid_hits((Hit *) hostBuffer.mapped, rays_.size());
 	}
 
+	void _test_setup()
+	{
+		initVulkan();
+		setupWindow();
+		prepare();
+
+		xcb_flush(connection);
+		xcb_generic_event_t *event;
+		while ((event = xcb_poll_for_event(connection)))
+		{
+			handleEvent(event);
+			free(event);
+		}
+	}
+	void _test_teardown()
+	{
+		// Flush device to make sure all resources can be freed
+		vkDeviceWaitIdle(device);
+	}
+
 	void test_pre_motion_blur()
 	{
+		_test_setup();
 		glm::mat3x4 transforms = {
 		    1.0f, 0.0f, 0.0f, 0.855f,
 		    0.0f, 1.0f, 0.0f, 0.0f,
@@ -2065,10 +2086,12 @@ class VulkanExample final
             {{1.5, 0.5, 10.0}, {0.0, 0.0, 1.0}, 11.0, 0.5, 0.355f, ignore, 0, 1, 0, true},
         };
 		assert_near(expecteds, valid_hits);
+		_test_teardown();
 	}
 
 	void test_motion_blur()
 	{
+		_test_setup();
 		add_object(0, vertices0, indices0);
 		glm::mat3x4 transform = {
 		    1.0f, 0.0f, 0.0f, 0.0f,
@@ -2101,10 +2124,12 @@ class VulkanExample final
 		    {{0.0, 0.0, 10.0}, {0.0, 0.0, -1.0}, 10.0, -0.0, -0.0, ignore, 0, 0, 0, true},
 		};
 		assert_near(expecteds2, valid_hits);
+		_test_teardown();
 	}
 
 	void test_add_two_objects_and_transform2()
 	{
+		_test_setup();
 		culling_enabled         = true;
 		glm::mat3x4 transforms0 = {
 		    1.0f, 0.0f, 0.0f, 0.0f,
@@ -2137,10 +2162,12 @@ class VulkanExample final
 		std::vector<HitPy> expecteds2  = {
             {{0.000001f, 0.0, -10.0}, {0.0, 0.0, -1.0}, 12.0, 0.0, 0.000001f, ignore, 0, 0, 0, true}};
 		assert_near(expecteds2, valid_hits2);
+		_test_teardown();
 	}
 
 	void test_animated_mesh()
 	{
+		_test_setup();
 		glm::mat3x4 transforms = {
 		    1.0f, 0.0f, 0.0f, 0.0f,
 		    0.0f, 1.0f, 0.0f, 0.0f,
@@ -2170,10 +2197,12 @@ class VulkanExample final
 		std::vector<HitPy> expecteds2    = {
             {{0.0f, 0.0f, 10.0f}, {0.0f, 0.0f, -2.5f}, 10.0f, -0.0f, 0.8f, ignore, 0, 0, 0, true}};
 		assert_near(expecteds2, hits_animated);
+		_test_teardown();
 	}
 
 	void test_add_two_objects()
 	{
+		_test_setup();
 		add_object(0, vertices0, indices0);
 		add_object(1, vertices1, indices1);
 
@@ -2191,10 +2220,12 @@ class VulkanExample final
         };
 		// clang-format on
 		assert_near(expecteds, valid_hits);
+		_test_teardown();
 	}
 
 	void test_simple_trace()
 	{
+		_test_setup();
 		add_object(0, vertices0, indices0);
 		auto valid_hits = trace_rays(rays);
 
@@ -2205,10 +2236,12 @@ class VulkanExample final
         };
 		// clang-format on
 		assert_near(expecteds, valid_hits);
+		_test_teardown();
 	}
 
 	void test_add_two_objects_and_transform1()
 	{
+		_test_setup();
 		culling_enabled        = true;
 		glm::mat3x4 transform_ = {
 		    0.1f, 0.0f, 0.0f, 0.0f,
@@ -2227,90 +2260,39 @@ class VulkanExample final
         };
 		// clang-format on
 		assert_near(expecteds, valid_hits);
-	}
-
-	void main()
-	{
-		initVulkan();
-		setupWindow();
-		prepare();
-
-		xcb_flush(connection);
-		xcb_generic_event_t *event;
-		while ((event = xcb_poll_for_event(connection)))
-		{
-			handleEvent(event);
-			free(event);
-		}
-        test_animated_mesh();
-		// Flush device to make sure all resources can be freed
-		vkDeviceWaitIdle(device);
+		_test_teardown();
 	}
 };
 
 int main(const int argc, const char *argv[])
 {
-	VulkanExample vulkanExample{};
-	vulkanExample.main();
-	return 0;
-}
-
-int main1()
-{
-	glm::mat3x4 transform_3x4 = {
-	    1.0f, 0.0f, 0.0f, 0.0f,
-	    0.0f, 1.0f, 0.0f, 0.0f,
-	    0.0f, 0.0f, 1.0f, 10.0f};
-	std::vector<float> isovelocity  = {10.0f, 0, 0};
-	std::vector<float> isovelocity2 = {10.0f, 0, 0};
-	bool               eq           = isovelocity == isovelocity2;
-	assert(eq);
-	std::vector<glm::mat3x4> transforms;
-
-	for (uint32_t t = 0; t < NUM_TIME_STEPS; t++)
 	{
-		// Create copy of transform
-		glm::mat3x4 transform_3x4_copy = transform_3x4;
-
-		// Apply linear velocity for now, we don't have angular velocity supported
-		transform_3x4_copy[0][3] += (isovelocity[0] * 0.1f * t / NUM_TIME_STEPS);
-		transform_3x4_copy[1][3] += (isovelocity[1] * 0.1f * t / NUM_TIME_STEPS);
-		transform_3x4_copy[2][3] += (isovelocity[2] * 0.1f * t / NUM_TIME_STEPS);
-		std::cout << "step " << t << std::endl;
-		std::cout << glm::to_string(transform_3x4_copy) << std::endl;
-		transforms.emplace_back(transform_3x4_copy);
+		VulkanExample vulkanExample{};
+		vulkanExample.test_add_two_objects();
 	}
-	float ray_time = 0.42f;
-	float x        = 1.0f / (NUM_TIME_STEPS - 1);
-
-	for (int32_t step = 0; step < NUM_TIME_STEPS; step++)
 	{
-		int32_t next_step = step + 1;
-		float   t         = x * step;
-		float   tnext     = x * next_step;
-		printf("%d %f\n", step, t);
-		if (tnext >= ray_time && ray_time > t)
-		{
-			float d  = (ray_time - t) / x;
-			float x_ = transforms[step][0][3] * (1.0f - d) + transforms[next_step][0][3] * d;
-			float y_ = transforms[step][1][3] * (1.0f - d) + transforms[next_step][1][3] * d;
-			float z_ = transforms[step][2][3] * (1.0f - d) + transforms[next_step][2][3] * d;
-			printf("\t%f (%f, %f, %f)\n", d, x_, y_, z_);
-			break;
-		}
+		VulkanExample vulkanExample{};
+		vulkanExample.test_add_two_objects_and_transform1();
+    }
+    {
+        VulkanExample vulkanExample{};
+		vulkanExample.test_add_two_objects_and_transform2();
+    }
+    {
+        VulkanExample vulkanExample{};
+		vulkanExample.test_pre_motion_blur();
+    }
+    {
+        VulkanExample vulkanExample{};
+		vulkanExample.test_motion_blur();
+    }
+    {
+        VulkanExample vulkanExample{};
+		vulkanExample.test_animated_mesh();
+    }
+    {
+        VulkanExample vulkanExample{};
+		vulkanExample.test_simple_trace();
 	}
-	auto xform = transform_at_time(transform_3x4, glm::vec3(isovelocity[0], isovelocity[1], isovelocity[3]), 0.95f);
-	std::cout << glm::to_string(xform) << std::endl;
-
-	std::set<float> sorted_times{};
-	for (const auto &ray : rays2)
-	{
-		sorted_times.emplace(ray.time);
-	}
-	for (auto time : sorted_times)
-	{
-		std::cout << time << std::endl;
-	}
-
 	return 0;
 }
