@@ -2242,7 +2242,7 @@ class VulkanExample final
 			handleEvent(event);
 			free(event);
 		}
-		test_add_two_objects_and_transform2();
+        test_animated_mesh();
 		// Flush device to make sure all resources can be freed
 		vkDeviceWaitIdle(device);
 	}

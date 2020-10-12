@@ -60,7 +60,7 @@ void main()
     //    uint  lidar_id;// The lidar id of the ray
 
     hit.valid = 1;
-    hit.normal = vec4(normal.xyz, 0.0f);
+    hit.normal = vec4(crs.xyz, 0.0f);
     hit.primID = gl_PrimitiveID;
     hit.instID = gl_InstanceCustomIndexNV;
     hit.distance = gl_RayTmaxNV;
