@@ -76,11 +76,6 @@ static glm::mat3x4        transform_at_time(const std::vector<glm::mat3x4> &tran
 	return transforms[0];
 }
 
-static int64_t current_time_msec()
-{
-	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 // Ray tracing acceleration structure
 struct AccelerationStructure
 {
@@ -488,11 +483,6 @@ class VulkanExample final
 		shaderStage.module                          = shaderModules.at(fileName);
 		shaderStage.pName                           = "main";
 		return shaderStage;
-	}
-
-	/** Prepare the next frame for workload submission by acquiring the next swap chain image */
-	void prepareFrame()
-	{
 	}
 
 	/** @brief Presents the current image to the swap chain */
@@ -1173,11 +1163,6 @@ class VulkanExample final
 		stagingBuffer.destroy();
 	}
 
-	bool     updates_enabled = false;
-	uint32_t frameNumber     = 0;
-	int64_t  last_update_sec = -1;
-	int64_t  start           = current_time_msec() / 1000;
-
 	static std::vector<Hit> get_valid_hits(Hit *hits, uint32_t raycount)
 	{
 		std::vector<Hit> valid_hits{};
@@ -1194,8 +1179,6 @@ class VulkanExample final
 
 	Hit *draw()
 	{
-		int64_t start_frame = current_time_msec();
-		prepareFrame();
 		// Set up submit info structure
 		// Semaphores will stay the same during application lifetime
 		// Command buffer submission info is set by each example
@@ -1208,60 +1191,6 @@ class VulkanExample final
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFence));
 		VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFence, VK_TRUE, UINT64_MAX));
 		submitFrame();
-		frameNumber++;
-		int64_t sec = current_time_msec() / 1000;
-		if (updates_enabled && last_update_sec != sec)
-		{
-			last_update_sec = sec;
-			auto elapsed    = sec - start;
-			if (elapsed <= 5)
-			{
-				//update vertices
-				vertices0[0].pos[2] -= 0.1f;
-				printf("%d %ld update instance transform\n", frameNumber, elapsed);
-				auto &obj0 = objects.at(0);
-				updateVertices(obj0.model, vertices0);
-				obj0.geom = createVkGeometryNV(obj0.model);
-				createOrUpdateBlas(obj0.blas, obj0.geom, true);
-
-				//update instance transform
-				auto &obj1 = objects.at(1);
-				obj1.instance.transforms[0][0] += 0.01f;
-				obj1.instance.transforms[1][1] += 0.01f;
-				updateTlas();
-			}
-			else
-			{
-				if (objects.find(2) == objects.end())
-				{
-					//add
-					printf("create object\n");
-					objects.emplace(std::make_pair(2, createMyObj(vertices2, indices2)));
-					auto &obj0 = objects.at(2);
-					createOrUpdateBlas(obj0.blas, obj0.geom);
-					buildTlas();
-					createDescriptorSets();
-					destroyCommandBuffers();
-					createCommandBuffers();
-					buildCommandBuffers();
-					vkDeviceWaitIdle(device);
-				}
-				if (elapsed == 10 && objects.find(1) != objects.end())
-				{
-					// delete
-					printf("delete object\n");
-					auto &obj = objects.at(1);
-					destroyObjectInternal(obj);
-					objects.erase(1);
-					buildTlas();
-					createDescriptorSets();
-					destroyCommandBuffers();
-					createCommandBuffers();
-					buildCommandBuffers();
-					vkDeviceWaitIdle(device);
-				}
-			}
-		}
 
 		// Make device writes visible to the host
 		if (hostBuffer.mapped == nullptr)
@@ -1270,18 +1199,7 @@ class VulkanExample final
 		}
 		hostBuffer.invalidate(hostBuffer.size);        //Invalidate a memory range of the buffer to make it visible to the host
 
-		//		std::vector<HitPy> computeOutput(width * height, HitPy{});
-		//		memcpy(computeOutput.data(), hostBuffer.mapped, hostBuffer.size);
-		// Copy to output
-		Hit *computeOutput = static_cast<Hit *>(hostBuffer.mapped);
-		return computeOutput;
-		//		hostBuffer.flush(hostBuffer.size);        //make writes visible to device
-		//		hostBuffer.unmap();
-		//		VkBufferCopy copyRegion = {0, 0, hostBuffer.size};
-		//		vulkanDevice->copyBuffer(&hostBuffer, &deviceBuffer, queue, &copyRegion);
-
-		//		long time = current_time_msec() - start_frame;
-		//		printf("rays %d %ldmsec hit0 valid: %d lidar %d inst %d prim %d point (%f, %f, %f) dist %f norm (%f,%f,%f)\n", cnt, time, hit0.valid, hit0.lidar_id, hit0.instID, hit0.primID, hit0.point.x, hit0.point.y, hit0.point.z, hit0.distance, hit0.normal.x, hit0.normal.y, hit0.normal.z);
+		return static_cast<Hit *>(hostBuffer.mapped);
 	}
 
 	/** @brief Setup the vulkan instance, enable required extensions and connect to the physical device (GPU) */
