@@ -15,6 +15,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -25,7 +26,6 @@
 #include <glm/glm.hpp>
 #include <glm/glm/gtc/quaternion.hpp>
 #include <glm/gtx/string_cast.hpp>
-#include <set>
 
 #include "vulkan/vulkan.h"
 
@@ -74,46 +74,6 @@ static glm::mat3x4        transform_at_time(const std::vector<glm::mat3x4> &tran
 		}
 	}
 	return transforms[0];
-}
-
-static glm::mat3x4 transform_at_time(const glm::mat3x4 &initial_transform, const glm::vec3 &isovelocity, const float ray_time)
-{
-	assert(ray_time >= 0.0f && ray_time <= 1.0f);
-	if (ray_time == 0.0f)
-		return initial_transform;
-	if (isovelocity == glm::vec3{0})
-		return initial_transform;
-
-	float time_per_step = 1.0f / (NUM_TIME_STEPS - 1);
-
-	for (int32_t step = 0; step < NUM_TIME_STEPS; step++)
-	{
-		int32_t next_step = step + 1;
-		float   t         = time_per_step * step;
-		float   tnext     = time_per_step * next_step;
-		if (tnext >= ray_time && ray_time > t)
-		{
-			float x = initial_transform[0][3] + (isovelocity[0] * 0.1f * step / NUM_TIME_STEPS);
-			float y = initial_transform[1][3] + (isovelocity[1] * 0.1f * step / NUM_TIME_STEPS);
-			float z = initial_transform[2][3] + (isovelocity[2] * 0.1f * step / NUM_TIME_STEPS);
-
-			float next_x = initial_transform[0][3] + (isovelocity[0] * 0.1f * next_step / NUM_TIME_STEPS);
-			float next_y = initial_transform[1][3] + (isovelocity[1] * 0.1f * next_step / NUM_TIME_STEPS);
-			float next_z = initial_transform[2][3] + (isovelocity[2] * 0.1f * next_step / NUM_TIME_STEPS);
-
-			float d  = (ray_time - t) / time_per_step;
-			float x_ = x * (1.0f - d) + next_x * d;
-			float y_ = y * (1.0f - d) + next_y * d;
-			float z_ = z * (1.0f - d) + next_z * d;
-			printf("\t%f (%f, %f, %f)\n", d, x_, y_, z_);
-			glm::mat3x4 copy = initial_transform;
-			copy[0][3]       = x_;
-			copy[1][3]       = y_;
-			copy[2][3]       = z_;
-			return copy;
-		}
-	}
-	return initial_transform;
 }
 
 static int64_t current_time_msec()
@@ -411,7 +371,7 @@ class VulkanExample final
 	{
 		// Wait fences to sync command buffer access
 		VkFenceCreateInfo fenceCreateInfo = vks::initializers::fenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
-        VK_CHECK_RESULT(vkCreateFence(device, &fenceCreateInfo, nullptr, &waitFence));
+		VK_CHECK_RESULT(vkCreateFence(device, &fenceCreateInfo, nullptr, &waitFence));
 	}
 
 	std::string shaderDir = "glsl";
@@ -430,28 +390,20 @@ class VulkanExample final
 	VkPhysicalDeviceFeatures              enabledFeatures{};               /** @brief Set of physical device features to be enabled for this example (must be set in the derived constructor) */
 	std::vector<const char *>             enabledDeviceExtensions;         /** @brief Set of device extensions to be enabled for this example (must be set in the derived constructor) */
 	std::vector<const char *>             enabledInstanceExtensions;
-	void *                                deviceCreatepNextChain = nullptr;                                     /** @brief Optional pNext structure for passing extension structures to device creation */
-	VkDevice                              device{};                                                             /** @brief Logical device, application's view of the physical device (GPU) */
-	VkQueue                               queue{};                                                              // Handle to the device graphics queue that command buffers are submitted to
-	VkCommandPool                         cmdPool{};                                                            // Command buffer pool
-	VkPipelineStageFlags                  submitPipelineStages = VK_PIPELINE_STAGE_TRANSFER_BIT; /** @brief Pipeline stages used to wait at for graphics queue submissions */
-	VkSubmitInfo                          submitInfo{};                                                         // Contains command buffers and semaphores to be presented to the queue
-	VkCommandBuffer                       drawCmdBuffers{};                                                     // Command buffers used for rendering
-	VkDescriptorPool                      descriptorPool = VK_NULL_HANDLE;                                      // Descriptor set pool
-	std::map<std::string, VkShaderModule> shaderModules;                                                        // List of shader modules created (stored for cleanup)
-	VkPipelineCache                       pipelineCache{};                                                      // Pipeline cache object
-	// Synchronization semaphores
-	struct
-	{
-		VkSemaphore presentComplete;        // Swap chain image presentation
-		VkSemaphore renderComplete;         // Command buffer submission and execution
-	} semaphores{};
-	VkFence            waitFence{};
-	uint32_t           width  = 1280;
-	uint32_t           height = 720;
-	vks::VulkanDevice *vulkanDevice{}; /** @brief Encapsulated physical and logical vulkan device */
-	std::string        name       = "VK_NV_ray_tracing";
-	uint32_t           apiVersion = VK_API_VERSION_1_0;
+	void *                                deviceCreatepNextChain = nullptr;       /** @brief Optional pNext structure for passing extension structures to device creation */
+	VkDevice                              device{};                               /** @brief Logical device, application's view of the physical device (GPU) */
+	VkQueue                               queue{};                                // Handle to the device graphics queue that command buffers are submitted to
+	VkCommandPool                         cmdPool{};                              // Command buffer pool
+	VkCommandBuffer                       drawCmdBuffers{};                       // Command buffers used for rendering
+	VkDescriptorPool                      descriptorPool = VK_NULL_HANDLE;        // Descriptor set pool
+	std::map<std::string, VkShaderModule> shaderModules;                          // List of shader modules created (stored for cleanup)
+	VkPipelineCache                       pipelineCache{};                        // Pipeline cache object
+	VkFence                               waitFence{};
+	uint32_t                              width  = 1280;
+	uint32_t                              height = 720;
+	vks::VulkanDevice *                   vulkanDevice{}; /** @brief Encapsulated physical and logical vulkan device */
+	std::string                           name       = "VK_NV_ray_tracing";
+	uint32_t                              apiVersion = VK_API_VERSION_1_0;
 
 	// OS specific
 	void destroyCommandBuffers()
@@ -474,8 +426,7 @@ class VulkanExample final
 	/** @brief Creates the application wide Vulkan instance */
 	VkResult createInstance()
 	{
-		VkApplicationInfo appInfo = {};
-		appInfo.sType             = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+		VkApplicationInfo appInfo = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
 		appInfo.pApplicationName  = name.c_str();
 		appInfo.pEngineName       = name.c_str();
 		appInfo.apiVersion        = apiVersion;
@@ -484,7 +435,7 @@ class VulkanExample final
 
 		// Get extensions supported by the instance and store for later use
 		uint32_t extCount = 0;
-		vkEnumerateInstanceExtensionProperties(nullptr, &extCount, nullptr);
+		VK_CHECK_RESULT(vkEnumerateInstanceExtensionProperties(nullptr, &extCount, nullptr));
 		if (extCount > 0)
 		{
 			std::vector<VkExtensionProperties> extensions(extCount);
@@ -574,6 +525,7 @@ class VulkanExample final
 			vks::tools::exitFatal("Could not enumerate physical devices : \n" + vks::tools::errorString(err), err);
 		}
 
+		physicalDevice = physicalDevices[0];
 		for (const auto &dev : physicalDevices)
 		{
 			VkPhysicalDeviceProperties props{};
@@ -581,13 +533,11 @@ class VulkanExample final
 			std::cout << "Device : " << props.deviceName << std::endl;
 			std::cout << "  Type : " << vks::tools::physicalDeviceTypeString(props.deviceType) << "\n";
 			std::cout << "   API : " << (props.apiVersion >> 22) << "." << ((props.apiVersion >> 12) & 0x3ff) << "." << (props.apiVersion & 0xfff) << "\n";
+			if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+			{
+				physicalDevice = dev;
+			}
 		}
-
-		// Select physical device to be used for the Vulkan example
-		// Defaults to the first device unless specified by command line
-		uint32_t selectedDevice = 1;
-
-		physicalDevice = physicalDevices[selectedDevice];
 
 		// Store properties (including limits), features and memory properties of the physical device (so that examples can check against them)
 		vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
@@ -598,7 +548,7 @@ class VulkanExample final
 		// This is handled by a separate class that gets a logical device representation
 		// and encapsulates functions related to a device
 		vulkanDevice = new vks::VulkanDevice(physicalDevice);
-		err          = vulkanDevice->createLogicalDevice(enabledFeatures, enabledDeviceExtensions, deviceCreatepNextChain);
+		err          = vulkanDevice->createLogicalDevice(enabledFeatures, enabledDeviceExtensions, deviceCreatepNextChain, false);
 		if (err != VK_SUCCESS)
 			vks::tools::exitFatal("Could not create Vulkan device: \n" + vks::tools::errorString(err), err);
 		device = vulkanDevice->logicalDevice;
@@ -621,14 +571,6 @@ class VulkanExample final
 	AccelerationStructure topLevelAS{};
 
 	vks::Buffer shaderBindingTable;
-
-	struct StorageImage
-	{
-		VkDeviceMemory memory;
-		VkImage        image;
-		VkImageView    view;
-		VkFormat       format;
-	} storageImage{};
 
 	vks::Buffer deviceBuffer{}, hostBuffer{};
 
@@ -972,11 +914,6 @@ class VulkanExample final
 		accelerationStructureWrite.descriptorCount = 1;
 		accelerationStructureWrite.descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV;
 
-		VkDescriptorImageInfo storageImageDescriptor{};
-		storageImageDescriptor.imageView   = storageImage.view;
-		storageImageDescriptor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-		VkWriteDescriptorSet resultImageWrite   = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImageDescriptor);
 		VkWriteDescriptorSet uniformBufferWrite = vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, &ubo.descriptor);
 
 		VkDescriptorBufferInfo bufferDescriptor     = {deviceBuffer.buffer, 0, VK_WHOLE_SIZE};
@@ -998,7 +935,6 @@ class VulkanExample final
 
 		std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
 		    accelerationStructureWrite,
-		    resultImageWrite,
 		    uniformBufferWrite,
 		    storageBufferDescSet,
 		    vertexBufferWrite,
@@ -1014,14 +950,12 @@ class VulkanExample final
 		auto objectCount = static_cast<uint32_t>(objects.size());
 
 		VkDescriptorSetLayoutBinding accelerationStructureLB{0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
-		VkDescriptorSetLayoutBinding resultImageLB{1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
 		VkDescriptorSetLayoutBinding uniformBufferLB{2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
 		VkDescriptorSetLayoutBinding storageBufferLB{3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_RAYGEN_BIT_NV};
 		VkDescriptorSetLayoutBinding vertexBufferLB{4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, objectCount, VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV};
 		VkDescriptorSetLayoutBinding indexBufferLB{5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, objectCount, VK_SHADER_STAGE_CLOSEST_HIT_BIT_NV};
 
 		std::vector<VkDescriptorSetLayoutBinding> bindings({accelerationStructureLB,
-		                                                    resultImageLB,
 		                                                    uniformBufferLB,
 		                                                    storageBufferLB,
 		                                                    vertexBufferLB,
@@ -1097,20 +1031,12 @@ class VulkanExample final
 		VK_CHECK_RESULT(ubo.map());
 	}
 
-	/*
-		Command buffer generation
-	*/
 	void buildCommandBuffers()
 	{
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
-		VkImageSubresourceRange subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
 		VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers, &cmdBufInfo));
 
-		/*
-				Dispatch the ray tracing commands
-			*/
 		vkCmdBindPipeline(drawCmdBuffers, VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, pipeline);
 		vkCmdBindDescriptorSets(drawCmdBuffers, VK_PIPELINE_BIND_POINT_RAY_TRACING_NV, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
@@ -1127,15 +1053,6 @@ class VulkanExample final
 		                 VK_NULL_HANDLE, 0, 0,
 		                 width, height, 1);
 
-		/*
-				Copy raytracing output to swap chain image
-			*/
-
-
-		//@todo: Default render pass setup will overwrite contents
-		//vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-		//drawUI(drawCmdBuffers[i]);
-		//vkCmdEndRenderPass(drawCmdBuffers[i]);
 		{
 			// Barrier to ensure that shader writes are finished before buffer is read back from GPU
 			VkBufferMemoryBarrier bufferBarrier = vks::initializers::bufferMemoryBarrier();
@@ -1279,9 +1196,17 @@ class VulkanExample final
 	{
 		int64_t start_frame = current_time_msec();
 		prepareFrame();
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers    = &drawCmdBuffers;
-		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+		// Set up submit info structure
+		// Semaphores will stay the same during application lifetime
+		// Command buffer submission info is set by each example
+		const VkPipelineStageFlags waitStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		auto                       submitInfo    = vks::initializers::submitInfo();
+		submitInfo.pWaitDstStageMask             = &waitStageMask;
+		submitInfo.commandBufferCount            = 1;
+		submitInfo.pCommandBuffers               = &drawCmdBuffers;
+		vkResetFences(device, 1, &waitFence);
+		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFence));
+		VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFence, VK_TRUE, UINT64_MAX));
 		submitFrame();
 		frameNumber++;
 		int64_t sec = current_time_msec() / 1000;
@@ -1372,25 +1297,6 @@ class VulkanExample final
 		// Get a graphics queue from the device
 		vkGetDeviceQueue(device, vulkanDevice->queueFamilyIndices.graphics, 0, &queue);
 
-		// Create synchronization objects
-		VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
-		// Create a semaphore used to synchronize image presentation
-		// Ensures that the image is displayed before we start submitting new commands to the queue
-		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &semaphores.presentComplete));
-		// Create a semaphore used to synchronize command submission
-		// Ensures that the image is not presented until all commands have been submitted and executed
-		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &semaphores.renderComplete));
-
-		// Set up submit info structure
-		// Semaphores will stay the same during application lifetime
-		// Command buffer submission info is set by each example
-		submitInfo                      = vks::initializers::submitInfo();
-		submitInfo.pWaitDstStageMask    = &submitPipelineStages;
-		submitInfo.waitSemaphoreCount   = 1;
-		submitInfo.pWaitSemaphores      = &semaphores.presentComplete;
-		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores    = &semaphores.renderComplete;
-
 		return true;
 	}
 
@@ -1468,8 +1374,7 @@ class VulkanExample final
 	VulkanExample()
 	{
 		// Check for a valid asset path
-		struct stat info
-		{};
+		struct stat info = {};
 		if (stat(getAssetPath().c_str(), &info) != 0)
 		{
 			std::cerr << "Error: Could not find asset path in " << getAssetPath() << "\n";
@@ -1490,9 +1395,6 @@ class VulkanExample final
 		vkDestroyPipeline(device, pipeline, nullptr);
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-		vkDestroyImageView(device, storageImage.view, nullptr);
-		vkDestroyImage(device, storageImage.image, nullptr);
-		vkFreeMemory(device, storageImage.memory, nullptr);
 		destroyTlas();
 
 		for (auto &obj : objects)
@@ -1512,12 +1414,8 @@ class VulkanExample final
 		}
 
 		vkDestroyPipelineCache(device, pipelineCache, nullptr);
-
 		vkDestroyCommandPool(device, cmdPool, nullptr);
-
-		vkDestroySemaphore(device, semaphores.presentComplete, nullptr);
-		vkDestroySemaphore(device, semaphores.renderComplete, nullptr);
-        vkDestroyFence(device, waitFence, nullptr);
+		vkDestroyFence(device, waitFence, nullptr);
 
 		delete vulkanDevice;
 
@@ -1863,6 +1761,11 @@ class VulkanExample final
 int main(const int argc, const char *argv[])
 {
 	{
+		printf("test_simple_trace\n");
+		VulkanExample vulkanExample{};
+		vulkanExample.test_simple_trace();
+	}
+	{
 		printf("test_embree_api\n");
 		VulkanExample vulkanExample{};
 		vulkanExample.test_embree_api();
@@ -1881,11 +1784,6 @@ int main(const int argc, const char *argv[])
 		printf("test_add_two_objects_and_transform2\n");
 		VulkanExample vulkanExample{};
 		vulkanExample.test_add_two_objects_and_transform2();
-	}
-	{
-		printf("test_simple_trace\n");
-		VulkanExample vulkanExample{};
-		vulkanExample.test_simple_trace();
 	}
 	{
 		printf("test_motion_blur\n");

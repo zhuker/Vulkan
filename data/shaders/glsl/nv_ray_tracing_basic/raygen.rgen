@@ -2,7 +2,6 @@
 #extension GL_NV_ray_tracing : require
 
 layout(binding = 0, set = 0) uniform accelerationStructureNV topLevelAS;
-layout(binding = 1, set = 0, rgba8) uniform image2D image;
 layout(binding = 2, set = 0) uniform CameraProperties
 {
     float time;
@@ -60,8 +59,4 @@ void main()
         hit.lidar_id = lidar_id;
         ololo.hits[idx] = hit;
     }
-
-    //    vec3 bary = vec3(1.0f - hit.bary_u - hit.bary_v, hit.bary_u, hit.bary_v);
-    vec3 bary = vec3(hit.valid, hit.valid, hit.valid);
-    imageStore(image, ivec2(gl_LaunchIDNV.xy), vec4(bary, 0.0));
 }
