@@ -153,7 +153,7 @@ static constexpr int COLOR_FormatSurface                   = 0x7F000789;
         LOGI("after swapChain.initSurface");
         uint32_t _width=0;
         uint32_t _height=0;
-        codecSwapChain.create(_width, _height, false, true, 2);
+        codecSwapChain.create(_width, _height, false, true);
         LOGI("after codecSwapChain.create %ux%u images %zu", _width, _height, codecSwapChain.images.size());
         RBX::MemoryStats::parseMemoryInfo(meminfo);
         LOGI("3 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
