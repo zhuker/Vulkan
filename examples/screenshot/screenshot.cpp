@@ -11,6 +11,8 @@
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
 #include <media/NdkMediaCodec.h>
+#include "parseproc.h"
+#include <thread>
 
 class VulkanExample : public VulkanExampleBase
 {
@@ -111,43 +113,96 @@ static constexpr int COLOR_FormatSurface                   = 0x7F000789;
     uint32_t codecCurrentBuffer = 0;
     AMediaCodec *codec;
     FILE* h264file= nullptr;
+    std::thread codecThread;
+    std::atomic<bool> codecStarted{false};
 
     void setupCodec() {
         const char* codecname = "c2.qti.avc.encoder";
-        codec = AMediaCodec_createCodecByName(codecname);
-        LOGI("AMediaCodec_createCodecByName %s %p", codecname, codec);
+//        codec = AMediaCodec_createCodecByName(codecname);
+//        LOGI("AMediaCodec_createCodecByName %s %p", codecname, codec);
+        codec = AMediaCodec_createEncoderByType("video/avc");
+        LOGI("AMediaCodec_createEncoderByType %s %p", "video/avc", codec);
         AMediaFormat *format = AMediaFormat_new();
         AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/avc");
         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 1280);
         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, 720);
         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_BIT_RATE, 2000000);
+//        AMediaFormat_setFloat(format, AMEDIAFORMAT_KEY_MAX_FPS_TO_ENCODER, 30.0f);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_LATENCY, 10);
+        AMediaFormat_setInt32(format, "allow-frame-drop", 1);
+        AMediaFormat_setFloat(format, AMEDIAFORMAT_KEY_MAX_FPS_TO_ENCODER, 60.0f);
         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, 60);
-        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 42);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 1);
         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FormatSurface);
+        RBX::MemoryStats::ProcMemInfo meminfo{};
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
 
+        LOGI("0 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
         AM_CHECK_RESULT("AMediaCodec_configure", AMediaCodec_configure(codec, format, nullptr, nullptr, AMEDIACODEC_CONFIGURE_FLAG_ENCODE));
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
+        LOGI("1 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
+        AMediaFormat *pFormat = AMediaCodec_getInputFormat(codec);
+        LOGI("format %s", AMediaFormat_toString(pFormat));
 
         ANativeWindow* w;
         AM_CHECK_RESULT("AMediaCodec_createInputSurface", AMediaCodec_createInputSurface(codec, &w));
         codecSwapChain.setContext(instance, physicalDevice, device);
         codecSwapChain.initSurface(w);
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
+        LOGI("2 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
         LOGI("after swapChain.initSurface");
         uint32_t _width=0;
         uint32_t _height=0;
-        codecSwapChain.create(_width, _height);
-        LOGI("after swapChain.create %ux%u", _width, _height);
+        codecSwapChain.create(_width, _height, false, true, 2);
+        LOGI("after codecSwapChain.create %ux%u images %zu", _width, _height, codecSwapChain.images.size());
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
+        LOGI("3 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
         AM_CHECK_RESULT("AMediaCodec_start", AMediaCodec_start(codec));
         h264file = fopen("/data/user/0/de.saschawillems.vulkanScreenshot/video.h264", "w");
         if (!h264file) {
             LOGE("cant open file for writing");
         }
-
+        codecStarted = true;
     }
 
+    static constexpr bool useCodecThread = true;
+    void writeEncoded() {
+        AMediaCodecBufferInfo info{};
+        ssize_t idx = AMediaCodec_dequeueOutputBuffer(codec, &info, 1000 * 16);
+        if (idx >= 0) {
+            size_t outsize = 0;
+            uint8_t *encoded = AMediaCodec_getOutputBuffer(codec, idx, &outsize);
+//            LOGI("AMediaCodec_dequeueOutputBuffer %u/%u offset %d size %d pts: %ld flags: %u outsize: %zu ptr: %p",
+//                 currentBuffer, codecCurrentBuffer,
+//                 info.offset, info.size, info.presentationTimeUs, info.flags, outsize, encoded);
+            if (h264file) {
+                if (1 != fwrite(encoded, info.size, 1, h264file)) {
+                    LOGE("write failed");
+                }
+            }
+            AM_CHECK_RESULT_ERR("AMediaCodec_releaseOutputBuffer",
+                                AMediaCodec_releaseOutputBuffer(codec, idx, false));
+        } else if (idx != AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
+            LOGI("AMediaCodec_dequeueOutputBuffer %zd", idx);
+        }
+
+    }
 	void loadAssets()
 	{
 		model.loadFromFile(getAssetPath() + "models/chinesedragon.gltf", vulkanDevice, queue, vkglTF::FileLoadingFlags::PreTransformVertices | vkglTF::FileLoadingFlags::PreMultiplyVertexColors | vkglTF::FileLoadingFlags::FlipY);
-        setupCodec();
+        if (!useCodecThread) {
+            setupCodec();
+        } else {
+            codecThread = std::thread([this]() {
+                setupCodec();
+                while (true) {
+                    writeEncoded();
+                }
+            });
+        }
+// no codec RSS 184M
+// with codec RSS 205M
+// with codec + encoding RSS 205M
     }
 
 	void buildCommandBuffers()
@@ -495,6 +550,7 @@ static constexpr int COLOR_FormatSurface                   = 0x7F000789;
 	}
 
     void codecDraw() {
+        if (!codecStarted) return;
 
         VK_CHECK_RESULT(codecSwapChain.acquireNextImage(semaphores.presentComplete, codecCurrentBuffer));
         VkImage srcImage = swapChain.images[currentBuffer];
@@ -528,27 +584,20 @@ static constexpr int COLOR_FormatSurface                   = 0x7F000789;
         vulkanDevice->flushCommandBuffer(copyCmd, queue);
         VK_CHECK_RESULT(codecSwapChain.queuePresent(queue, codecCurrentBuffer, semaphores.renderComplete));
         VK_CHECK_RESULT(vkQueueWaitIdle(queue));
-        AMediaCodecBufferInfo info{};
-        ssize_t idx = AMediaCodec_dequeueOutputBuffer(codec, &info, 1000 * 16);
-        if (idx >= 0) {
-            size_t outsize = 0;
-            uint8_t *encoded = AMediaCodec_getOutputBuffer(codec, idx, &outsize);
-            LOGI("AMediaCodec_dequeueOutputBuffer %u/%u offset %d size %d pts: %ld flags: %u outsize: %zu ptr: %p",
-                 currentBuffer, codecCurrentBuffer,
-                 info.offset, info.size, info.presentationTimeUs, info.flags, outsize, encoded);
-            if (h264file) {
-                if (1 != fwrite(encoded, info.size, 1, h264file)) {
-                    LOGE("write failed");
-                }
-            }
-            AM_CHECK_RESULT_ERR("AMediaCodec_releaseOutputBuffer", AMediaCodec_releaseOutputBuffer(codec, idx, false));
-        } else if (idx != AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
-            LOGI("AMediaCodec_dequeueOutputBuffer %zd", idx);
+        if (!useCodecThread) {
+            writeEncoded();
         }
     }
 
 	void draw()
 	{
+        static int drawCalls = 0;
+//        if (drawCalls % 100 == 0) {
+//            RBX::MemoryStats::ProcMemInfo meminfo{};
+//            RBX::MemoryStats::parseMemoryInfo(meminfo);
+//            LOGI("%d mem free %lu avail %lu", drawCalls, meminfo.free, meminfo.memAvailable);
+//        }
+        drawCalls++;
 		VulkanExampleBase::prepareFrame();
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
