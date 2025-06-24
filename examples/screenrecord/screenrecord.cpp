@@ -31,6 +31,7 @@ public:
     VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
     VkDescriptorSet descriptorSet{ VK_NULL_HANDLE };
 
+
     VulkanExample() : VulkanExampleBase()
     {
         title = "Record Screen to Video";
@@ -70,8 +71,18 @@ public:
     bool codecStarted = false;
     uint32_t framesEncoded = 0;
 
+    std::vector<VkSemaphore> codecAcquireSemaphores;
+    VkCommandBuffer copyCmd = VK_NULL_HANDLE;
+    VkSemaphore codecBlitSemaphore;
+    VkSemaphore renderCompleteDup;
+
+    uint32_t codec_width_ = 0, codec_height_ = 0;
+    VkFormat codec_format_ = VK_FORMAT_UNDEFINED;
+
     void setupCodec() {
         codec = AMediaCodec_createEncoderByType("video/avc");
+        uint32_t formatsToTry[] = {COLOR_FormatSurface};
+
         AMediaFormat *format = AMediaFormat_new();
         AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/avc");
         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, VideoWidth);
@@ -83,19 +94,37 @@ public:
 
         AM_CHECK_RESULT("AMediaCodec_configure", AMediaCodec_configure(codec, format, nullptr, nullptr, AMEDIACODEC_CONFIGURE_FLAG_ENCODE));
 
-        ANativeWindow* w;
+        ANativeWindow *w;
+
         AM_CHECK_RESULT("AMediaCodec_createInputSurface", AMediaCodec_createInputSurface(codec, &w));
+        assert(w);
 
         codecSwapChain.setContext(instance, physicalDevice, device);
         codecSwapChain.initSurface(w);
-        uint32_t _width = 0;
-        uint32_t _height = 0;
-        codecSwapChain.create(_width, _height, false, true);
+        codecSwapChain.create(codec_width_, codec_height_, false, true);
+
         AM_CHECK_RESULT("AMediaCodec_start", AMediaCodec_start(codec));
+
         h264file = fopen("/data/data/de.saschawillems.vulkanScreenRecord/video.h264", "w");
         if (!h264file) {
             LOGE("cant open file for writing");
         }
+
+        VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
+
+        for (int i = 0; i < codecSwapChain.images.size(); ++i) {
+            VkSemaphore semaphore;
+            VK_CHECK_RESULT(
+                    vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &semaphore));
+            codecAcquireSemaphores.push_back(semaphore);
+        }
+
+        VK_CHECK_RESULT(
+                vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &codecBlitSemaphore));
+        VK_CHECK_RESULT(
+                vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &renderCompleteDup));
+
+        codec_format_ = codecSwapChain.colorFormat;
         codecStarted = true;
     }
 
@@ -127,6 +156,7 @@ public:
                            vkglTF::FileLoadingFlags::FlipY);
         setupCodec();
     }
+
 
     void buildCommandBuffers() override
     {
@@ -174,9 +204,11 @@ public:
 
     void setupDescriptors()
     {
+
         // Pool
         std::vector<VkDescriptorPoolSize> poolSizes = {
                 vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1),
+
         };
         VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 2);
         VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
@@ -259,13 +291,17 @@ public:
         prepared = true;
     }
 
-    void codecDraw() {
+    // Blit-style rendering that doesn't work on the Amazon tablet.
+    void codecBlit() {
         if (!codecStarted) return;
 
+        VkSemaphore acquireSemaphore = codecAcquireSemaphores[0]; // Note: We only have one frame in flight, so no need to care about the other semaphores.
         VK_CHECK_RESULT(
-                codecSwapChain.acquireNextImage(semaphores.presentComplete, codecCurrentBuffer));
+                codecSwapChain.acquireNextImage(acquireSemaphore, codecCurrentBuffer));
         VkImage dstImage = codecSwapChain.images[codecCurrentBuffer];
-        VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+
+        assert(copyCmd == VK_NULL_HANDLE);
+        copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                                                     true);
 
         vks::tools::insertImageMemoryBarrier(
@@ -278,8 +314,8 @@ public:
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
-        VkImage srcImage = swapChain.images[currentBuffer];
 
+        VkImage srcImage = swapChain.images[currentBuffer];
         vks::tools::insertImageMemoryBarrier(
                 copyCmd,
                 srcImage,
@@ -340,12 +376,30 @@ public:
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
 
-        vulkanDevice->flushCommandBuffer(copyCmd, queue);
-        VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+        VK_CHECK_RESULT(vkEndCommandBuffer(copyCmd));
+
+        // Configure the `copyCmd` buffer submission.
+        VkSubmitInfo codecSubmitInfo = submitInfo;
+        codecSubmitInfo.pCommandBuffers = &copyCmd;
+        codecSubmitInfo.commandBufferCount = 1;
+
+        // Wait for the acquire image and draw command buffers to finish.
+        const VkSemaphore waitSemaphores[2] = {acquireSemaphore, renderCompleteDup};
+        VkPipelineStageFlags submitPipelineStages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT };
+        codecSubmitInfo.pWaitDstStageMask = submitPipelineStages;
+        codecSubmitInfo.pWaitSemaphores = waitSemaphores;
+        codecSubmitInfo.waitSemaphoreCount = 2;
+        // And signal our codec blit semaphore.
+        codecSubmitInfo.pSignalSemaphores = &codecBlitSemaphore;
+        codecSubmitInfo.signalSemaphoreCount = 1;
+
+        // Submit the command buffer!
+        VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &codecSubmitInfo, VK_NULL_HANDLE));
+
+        // Then, present to the codec swapchain as soon as the `copyCmd` buffer is complete.
         VK_CHECK_RESULT(
-                codecSwapChain.queuePresent(queue, codecCurrentBuffer, semaphores.renderComplete));
-        VK_CHECK_RESULT(vkQueueWaitIdle(queue));
-        writeEncoded();
+                codecSwapChain.queuePresent(queue, codecCurrentBuffer, codecBlitSemaphore));
+
     }
 
     void draw()
@@ -353,11 +407,41 @@ public:
         float deltaY = 1.0f;
         camera.rotate(glm::vec3(0.0f, -deltaY, 0.0f));
         VulkanExampleBase::prepareFrame();
+
+        VkCommandBuffer commandBuffers[2] = {drawCmdBuffers[currentBuffer], copyCmd};
+        VkSemaphore waitSemaphores[2] = {semaphores.presentComplete, codecAcquireSemaphores[0]};
+        VkPipelineStageFlags waitPipelineStages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+
         submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
+        submitInfo.pCommandBuffers = commandBuffers;
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitDstStageMask = waitPipelineStages;
+
+        // This vkQueueSubmit will signal the `renderComplete` semaphore when it's complete. We
+        // later wait for that semaphore in `codecDraw`.
+        VkSemaphore signalingSemas[2] = {semaphores.renderComplete, renderCompleteDup};
+        submitInfo.pSignalSemaphores = signalingSemas;
+        submitInfo.signalSemaphoreCount = 2;
+
         VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+
+        // `submitFrame` calls vkQueueWaitIdle, so we do it last.
         VulkanExampleBase::submitFrame();
-        codecDraw();
+
+        // Then, present to the codec swapchain as soon as rendering is complete.
+        codecBlit();
+
+        VK_CHECK_RESULT(vkQueueWaitIdle(queue));
+
+        writeEncoded();
+        // Now that we're done with `copyCmd`, free it here.
+        if (copyCmd != VK_NULL_HANDLE)
+        {
+            vkFreeCommandBuffers(device, vulkanDevice->commandPool, 1, &copyCmd);
+            copyCmd = VK_NULL_HANDLE;
+        }
+
     }
 
     void render() override
