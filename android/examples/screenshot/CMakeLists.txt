@@ -34,4 +34,5 @@ target_link_libraries(
     android
     log
     z
+        mediandk
 )

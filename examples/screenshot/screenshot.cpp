@@ -10,6 +10,9 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include <media/NdkMediaCodec.h>
+#include "parseproc.h"
+#include <thread>
 
 class VulkanExample : public VulkanExampleBase
 {
@@ -49,11 +52,158 @@ public:
 			uniformBuffer.destroy();
 		}
 	}
+    static const char* amErrorString(media_status_t status) {
+        /** The requested media operation completed successfully. */
+        switch (status) {
+            case AMEDIA_OK: return "AMEDIA_OK";
+            case AMEDIACODEC_ERROR_INSUFFICIENT_RESOURCE: return "AMEDIACODEC_ERROR_INSUFFICIENT_RESOURCE";
+            case AMEDIACODEC_ERROR_RECLAIMED: return "AMEDIACODEC_ERROR_RECLAIMED";
+            case AMEDIA_ERROR_UNKNOWN: return "AMEDIA_ERROR_UNKNOWN";
+            case AMEDIA_ERROR_MALFORMED: return "AMEDIA_ERROR_MALFORMED";
+            case AMEDIA_ERROR_UNSUPPORTED: return "AMEDIA_ERROR_UNSUPPORTED";
+            case AMEDIA_ERROR_INVALID_OBJECT: return "AMEDIA_ERROR_INVALID_OBJECT";
+            case AMEDIA_ERROR_INVALID_PARAMETER: return "AMEDIA_ERROR_INVALID_PARAMETER";
+            case AMEDIA_ERROR_INVALID_OPERATION: return "AMEDIA_ERROR_INVALID_OPERATION";
+            case AMEDIA_ERROR_END_OF_STREAM: return "AMEDIA_ERROR_END_OF_STREAM";
+            case AMEDIA_ERROR_IO: return "AMEDIA_ERROR_IO";
+            case AMEDIA_ERROR_WOULD_BLOCK: return "AMEDIA_ERROR_WOULD_BLOCK";
+            case AMEDIA_DRM_ERROR_BASE: return "AMEDIA_DRM_ERROR_BASE";
+            case AMEDIA_DRM_NOT_PROVISIONED: return "AMEDIA_DRM_NOT_PROVISIONED";
+            case AMEDIA_DRM_RESOURCE_BUSY: return "AMEDIA_DRM_RESOURCE_BUSY";
+            case AMEDIA_DRM_DEVICE_REVOKED: return "AMEDIA_DRM_DEVICE_REVOKED";
+            case AMEDIA_DRM_SHORT_BUFFER: return "AMEDIA_DRM_SHORT_BUFFER";
+            case AMEDIA_DRM_SESSION_NOT_OPENED: return "AMEDIA_DRM_SESSION_NOT_OPENED";
+            case AMEDIA_DRM_TAMPER_DETECTED: return "AMEDIA_DRM_TAMPER_DETECTED";
+            case AMEDIA_DRM_VERIFY_FAILED: return "AMEDIA_DRM_VERIFY_FAILED";
+            case AMEDIA_DRM_NEED_KEY: return "AMEDIA_DRM_NEED_KEY";
+            case AMEDIA_DRM_LICENSE_EXPIRED: return "AMEDIA_DRM_LICENSE_EXPIRED";
+            case AMEDIA_IMGREADER_ERROR_BASE: return "AMEDIA_IMGREADER_ERROR_BASE";
+            case AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE: return "AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE";
+            case AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED: return "AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED";
+            case AMEDIA_IMGREADER_CANNOT_LOCK_IMAGE: return "AMEDIA_IMGREADER_CANNOT_LOCK_IMAGE";
+            case AMEDIA_IMGREADER_CANNOT_UNLOCK_IMAGE: return "AMEDIA_IMGREADER_CANNOT_UNLOCK_IMAGE";
+            case AMEDIA_IMGREADER_IMAGE_NOT_LOCKED: return "AMEDIA_IMGREADER_IMAGE_NOT_LOCKED";
+        }
+        return "UNKNOWN";
 
+    }
+#define AM_CHECK_RESULT(ctx, f)																	\
+{																								\
+	media_status_t res = (f);																	\
+	if (res != AMEDIA_OK)																		\
+	{																							\
+		LOGE("Fatal : %s \"%s\" in %s at line %d", ctx, amErrorString(res), __FILE__, __LINE__);\
+	} else {                                                                                    \
+		LOGI("OK : %s \"%s\" in %s at line %d", ctx, amErrorString(res), __FILE__, __LINE__);   \
+    }                                                                                           \
+}
+
+#define AM_CHECK_RESULT_ERR(ctx, f)																\
+{																								\
+	media_status_t res = (f);																	\
+	if (res != AMEDIA_OK)																		\
+	{																							\
+		LOGE("Fatal : %s \"%s\" in %s at line %d", ctx, amErrorString(res), __FILE__, __LINE__);\
+    }                                                                                           \
+}
+
+static constexpr int COLOR_FormatSurface                   = 0x7F000789;
+    VulkanSwapChain codecSwapChain;
+    // Active frame buffer index
+    uint32_t codecCurrentBuffer = 0;
+    AMediaCodec *codec;
+    FILE* h264file= nullptr;
+    std::thread codecThread;
+    std::atomic<bool> codecStarted{false};
+
+    void setupCodec() {
+        const char* codecname = "c2.qti.avc.encoder";
+//        codec = AMediaCodec_createCodecByName(codecname);
+//        LOGI("AMediaCodec_createCodecByName %s %p", codecname, codec);
+        codec = AMediaCodec_createEncoderByType("video/avc");
+        LOGI("AMediaCodec_createEncoderByType %s %p", "video/avc", codec);
+        AMediaFormat *format = AMediaFormat_new();
+        AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/avc");
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 1280);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, 720);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_BIT_RATE, 2000000);
+//        AMediaFormat_setFloat(format, AMEDIAFORMAT_KEY_MAX_FPS_TO_ENCODER, 30.0f);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_LATENCY, 10);
+        AMediaFormat_setInt32(format, "allow-frame-drop", 1);
+        AMediaFormat_setFloat(format, AMEDIAFORMAT_KEY_MAX_FPS_TO_ENCODER, 60.0f);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, 60);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 1);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FormatSurface);
+        RBX::MemoryStats::ProcMemInfo meminfo{};
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
+
+        LOGI("0 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
+        AM_CHECK_RESULT("AMediaCodec_configure", AMediaCodec_configure(codec, format, nullptr, nullptr, AMEDIACODEC_CONFIGURE_FLAG_ENCODE));
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
+        LOGI("1 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
+        AMediaFormat *pFormat = AMediaCodec_getInputFormat(codec);
+        LOGI("format %s", AMediaFormat_toString(pFormat));
+
+        ANativeWindow* w;
+        AM_CHECK_RESULT("AMediaCodec_createInputSurface", AMediaCodec_createInputSurface(codec, &w));
+        codecSwapChain.setContext(instance, physicalDevice, device);
+        codecSwapChain.initSurface(w);
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
+        LOGI("2 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
+        LOGI("after swapChain.initSurface");
+        uint32_t _width=0;
+        uint32_t _height=0;
+        codecSwapChain.create(_width, _height, false, true);
+        LOGI("after codecSwapChain.create %ux%u images %zu", _width, _height, codecSwapChain.images.size());
+        RBX::MemoryStats::parseMemoryInfo(meminfo);
+        LOGI("3 mem free %lu avail %lu", meminfo.free, meminfo.memAvailable);
+        AM_CHECK_RESULT("AMediaCodec_start", AMediaCodec_start(codec));
+        h264file = fopen("/data/user/0/de.saschawillems.vulkanScreenshot/video.h264", "w");
+        if (!h264file) {
+            LOGE("cant open file for writing");
+        }
+        codecStarted = true;
+    }
+
+    static constexpr bool useCodecThread = true;
+    void writeEncoded() {
+        AMediaCodecBufferInfo info{};
+        ssize_t idx = AMediaCodec_dequeueOutputBuffer(codec, &info, 1000 * 16);
+        if (idx >= 0) {
+            size_t outsize = 0;
+            uint8_t *encoded = AMediaCodec_getOutputBuffer(codec, idx, &outsize);
+//            LOGI("AMediaCodec_dequeueOutputBuffer %u/%u offset %d size %d pts: %ld flags: %u outsize: %zu ptr: %p",
+//                 currentBuffer, codecCurrentBuffer,
+//                 info.offset, info.size, info.presentationTimeUs, info.flags, outsize, encoded);
+            if (h264file) {
+                if (1 != fwrite(encoded, info.size, 1, h264file)) {
+                    LOGE("write failed");
+                }
+            }
+            AM_CHECK_RESULT_ERR("AMediaCodec_releaseOutputBuffer",
+                                AMediaCodec_releaseOutputBuffer(codec, idx, false));
+        } else if (idx != AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
+            LOGI("AMediaCodec_dequeueOutputBuffer %zd", idx);
+        }
+
+    }
 	void loadAssets()
 	{
 		model.loadFromFile(getAssetPath() + "models/chinesedragon.gltf", vulkanDevice, queue, vkglTF::FileLoadingFlags::PreTransformVertices | vkglTF::FileLoadingFlags::PreMultiplyVertexColors | vkglTF::FileLoadingFlags::FlipY);
-	}
+        if (!useCodecThread) {
+            setupCodec();
+        } else {
+            codecThread = std::thread([this]() {
+                setupCodec();
+                while (true) {
+                    writeEncoded();
+                }
+            });
+        }
+// no codec RSS 184M
+// with codec RSS 205M
+// with codec + encoding RSS 205M
+    }
 
 	void buildCommandBuffers()
 	{
@@ -190,14 +340,14 @@ public:
 		// Check if the device supports blitting from optimal images (the swapchain images are in optimal format)
 		vkGetPhysicalDeviceFormatProperties(physicalDevice, swapChain.colorFormat, &formatProps);
 		if (!(formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
-			std::cerr << "Device does not support blitting from optimal tiled images, using copy instead of blit!" << std::endl;
+            LOGW("Device does not support blitting from optimal tiled images, using copy instead of blit!");
 			supportsBlit = false;
 		}
 
 		// Check if the device supports blitting to linear images
 		vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8G8B8A8_UNORM, &formatProps);
 		if (!(formatProps.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
-			std::cerr << "Device does not support blitting to linear tiled images, using copy instead of blit!" << std::endl;
+            LOGW("Device does not support blitting to linear tiled images, using copy instead of blit!");
 			supportsBlit = false;
 		}
 
@@ -338,7 +488,7 @@ public:
 
 		// Map image memory so we can start copying from it
 		const char* data;
-		vkMapMemory(device, dstImageMemory, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+        VK_CHECK_RESULT(vkMapMemory(device, dstImageMemory, 0, VK_WHOLE_SIZE, 0, (void**)&data));
 		data += subResourceLayout.offset;
 
 		std::ofstream file(filename, std::ios::out | std::ios::binary);
@@ -378,7 +528,7 @@ public:
 		}
 		file.close();
 
-		std::cout << "Screenshot saved to disk" << std::endl;
+        LOGI("Screenshot saved to disk %s", filename);
 
 		// Clean up resources
 		vkUnmapMemory(device, dstImageMemory);
@@ -399,13 +549,61 @@ public:
 		prepared = true;
 	}
 
+    void codecDraw() {
+        if (!codecStarted) return;
+
+        VK_CHECK_RESULT(codecSwapChain.acquireNextImage(semaphores.presentComplete, codecCurrentBuffer));
+        VkImage srcImage = swapChain.images[currentBuffer];
+        VkImage dstImage = codecSwapChain.images[codecCurrentBuffer];
+        VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+        VkOffset3D blitSize;
+        blitSize.x = width;
+        blitSize.y = height;
+        blitSize.z = 1;
+
+        VkOffset3D blitDstSize;
+        blitDstSize.x = 1280;
+        blitDstSize.y = 720;
+        blitDstSize.z = 1;
+        VkImageBlit imageBlitRegion{};
+        imageBlitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imageBlitRegion.srcSubresource.layerCount = 1;
+        imageBlitRegion.srcOffsets[1] = blitSize;
+        imageBlitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imageBlitRegion.dstSubresource.layerCount = 1;
+        imageBlitRegion.dstOffsets[1] = blitDstSize;
+
+        // Issue the blit command
+        vkCmdBlitImage(
+                copyCmd,
+                srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &imageBlitRegion,
+                VK_FILTER_LINEAR);
+        vulkanDevice->flushCommandBuffer(copyCmd, queue);
+        VK_CHECK_RESULT(codecSwapChain.queuePresent(queue, codecCurrentBuffer, semaphores.renderComplete));
+        VK_CHECK_RESULT(vkQueueWaitIdle(queue));
+        if (!useCodecThread) {
+            writeEncoded();
+        }
+    }
+
 	void draw()
 	{
+        static int drawCalls = 0;
+//        if (drawCalls % 100 == 0) {
+//            RBX::MemoryStats::ProcMemInfo meminfo{};
+//            RBX::MemoryStats::parseMemoryInfo(meminfo);
+//            LOGI("%d mem free %lu avail %lu", drawCalls, meminfo.free, meminfo.memAvailable);
+//        }
+        drawCalls++;
 		VulkanExampleBase::prepareFrame();
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
 		VulkanExampleBase::submitFrame();
+        codecDraw();
 	}
 
 	virtual void render()
@@ -420,7 +618,7 @@ public:
 	{
 		if (overlay->header("Functions")) {
 			if (overlay->button("Take screenshot")) {
-				saveScreenshot("screenshot.ppm");
+				saveScreenshot("/data/data/de.saschawillems.vulkanScreenshot/screenshot.ppm");
 			}
 			if (screenshotSaved) {
 				overlay->text("Screenshot saved as screenshot.ppm");
