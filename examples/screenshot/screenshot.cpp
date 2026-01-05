@@ -51,6 +51,38 @@ public:
 			}
 		}
 	}
+    void getEnabledExtensions() override
+	{
+	    // Check for Vulkan Video extensions
+	    bool videoQueue = vulkanDevice->extensionSupported(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
+	    bool encodeQueue = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME);
+	    std::cout << "Vulkan Video Encoding Support:" << std::endl;
+	    std::cout << "  Base Video Queue: " << (videoQueue ? "Yes" : "No") << std::endl;
+	    std::cout << "  Encode Queue:     " << (encodeQueue ? "Yes" : "No") << std::endl;
+	    // Check for specific encoders
+        if (videoQueue && encodeQueue) {
+            enabledDeviceExtensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
+            enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME);
+
+            std::cout << "  Supported Encoders:" << std::endl;
+            bool h264 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
+            bool h265 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME);
+            bool av1 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME);
+            std::cout << "    H.264: " << (h264 ? "Yes" : "No") << std::endl;
+            std::cout << "    H.265: " << (h265 ? "Yes" : "No") << std::endl;
+            std::cout << "    AV1:   " << (av1 ? "Yes" : "No") << std::endl;
+
+            if (h264) {
+                enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
+            }
+            if (h265) {
+                enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME);
+            }
+            if (av1) {
+                enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME);
+            }
+        }
+	}
 
 	void loadAssets()
 	{
@@ -130,6 +162,7 @@ public:
 
 	void updateUniformBuffers()
 	{
+	    camera.rotate(glm::vec3(0.01f, 0.0f, 0.0f));
 		uniformData.projection = camera.matrices.perspective;
 		uniformData.view = camera.matrices.view;
 		uniformData.model = glm::mat4(1.0f);
