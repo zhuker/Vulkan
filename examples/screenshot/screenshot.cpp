@@ -24,6 +24,12 @@ public:
         VkDeviceMemory memoryUV = VK_NULL_HANDLE;
         VkImageView viewY = VK_NULL_HANDLE;      // Y plane view (full resolution)
         VkImageView viewUV = VK_NULL_HANDLE;     // UV plane view (half resolution)
+        
+        // Multi-planar NV12 image for video encoding (separate from storage images)
+        VkImage encodeImage = VK_NULL_HANDLE;    // NV12 multi-planar image for video encode
+        VkDeviceMemory encodeMemory = VK_NULL_HANDLE;
+        VkImageView encodeView = VK_NULL_HANDLE; // View for video encode
+        
         uint32_t width = 0;
         uint32_t height = 0;
     };
@@ -53,6 +59,9 @@ private:
     uint32_t height = 0;
     bool needsSwizzle = false;  // BGR to RGB swizzle flag
     bool isInitialized = false;
+    
+    // Video profile for encode-compatible images (not owned)
+    const VkVideoProfileListInfoKHR* videoProfileList = nullptr;
 
     // Push constant for shader
     struct PushConstants {
@@ -69,14 +78,17 @@ public:
     }
 
     // Initialize the converter
+    // videoProfileList is required when using VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR
     bool initialize(vks::VulkanDevice* vulkanDevice, uint32_t width, uint32_t height, 
                    VkFormat swapchainFormat, const std::vector<VkImage>& swapchainImages,
-                   const std::string& shaderPath) {
+                   const std::string& shaderPath,
+                   const VkVideoProfileListInfoKHR* videoProfileList = nullptr) {
         this->vulkanDevice = vulkanDevice;
         this->device = vulkanDevice->logicalDevice;
         this->physicalDevice = vulkanDevice->physicalDevice;
         this->width = width;
         this->height = height;
+        this->videoProfileList = videoProfileList;
 
         // Check if swapchain format is BGR and needs swizzle
         std::vector<VkFormat> formatsBGR = { 
@@ -111,10 +123,20 @@ public:
     }
 
     // Record compute dispatch commands for color conversion
-    void recordCommands(VkCommandBuffer cmdBuffer, uint32_t imageIndex, VkImage srcImage) {
+    // If srcQueueFamily != dstQueueFamily, we need to release ownership to dstQueueFamily (video encode)
+    void recordCommands(VkCommandBuffer cmdBuffer, uint32_t imageIndex, VkImage srcImage,
+                        uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED, 
+                        uint32_t dstQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
         if (!isInitialized || imageIndex >= nv12Images.size()) return;
 
         NV12Image& nv12 = nv12Images[imageIndex];
+        
+        // Determine if cross-queue ownership transfer is needed
+        bool needsOwnershipTransfer = (srcQueueFamily != VK_QUEUE_FAMILY_IGNORED) && 
+                                       (dstQueueFamily != VK_QUEUE_FAMILY_IGNORED) &&
+                                       (srcQueueFamily != dstQueueFamily);
+        
+        bool hasEncodeImage = (nv12.encodeImage != VK_NULL_HANDLE);
 
         // Transition source (swapchain) image to SHADER_READ_ONLY_OPTIMAL for sampled read
         VkImageMemoryBarrier srcBarrier = {
@@ -176,36 +198,117 @@ public:
         uint32_t groupCountY = (height + 15) / 16;
         vkCmdDispatch(cmdBuffer, groupCountX, groupCountY, 1);
 
-        // Barrier: compute write -> transfer/read
-        VkImageMemoryBarrier yPostBarrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = nv12.imageY,
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-        };
+        if (hasEncodeImage) {
+            // Transition Y/UV to TRANSFER_SRC, encode image planes to TRANSFER_DST
+            VkImageMemoryBarrier copyBarriers[] = {
+                {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = nv12.imageY,
+                    .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = nv12.imageUV,
+                    .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .srcAccessMask = 0,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = nv12.encodeImage,
+                    .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .srcAccessMask = 0,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = nv12.encodeImage,
+                    .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
+                }
+            };
+            vkCmdPipelineBarrier(cmdBuffer,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 4, copyBarriers);
 
-        VkImageMemoryBarrier uvPostBarrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = nv12.imageUV,
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-        };
+            // Copy Y plane to encode image plane 0
+            VkImageCopy yCopy = {
+                .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .srcOffset = { 0, 0, 0 },
+                .dstSubresource = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1 },
+                .dstOffset = { 0, 0, 0 },
+                .extent = { width, height, 1 }
+            };
+            vkCmdCopyImage(cmdBuffer, nv12.imageY, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           nv12.encodeImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &yCopy);
 
-        VkImageMemoryBarrier postBarriers[] = { yPostBarrier, uvPostBarrier };
-        vkCmdPipelineBarrier(cmdBuffer,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-            0, 0, nullptr, 0, nullptr, 2, postBarriers);
+            // Copy UV plane to encode image plane 1
+            VkImageCopy uvCopy = {
+                .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .srcOffset = { 0, 0, 0 },
+                .dstSubresource = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1 },
+                .dstOffset = { 0, 0, 0 },
+                .extent = { width / 2, height / 2, 1 }
+            };
+            vkCmdCopyImage(cmdBuffer, nv12.imageUV, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           nv12.encodeImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &uvCopy);
+
+            // Transition encode image to VIDEO_ENCODE_SRC layout (with optional ownership transfer)
+            VkImageMemoryBarrier2 encodeBarriers[] = {
+                {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                    .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+                    .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+                    .srcQueueFamilyIndex = needsOwnershipTransfer ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = needsOwnershipTransfer ? dstQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+                    .image = nv12.encodeImage,
+                    .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                    .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+                    .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+                    .srcQueueFamilyIndex = needsOwnershipTransfer ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = needsOwnershipTransfer ? dstQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+                    .image = nv12.encodeImage,
+                    .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
+                }
+            };
+            VkDependencyInfo depInfo = {
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .imageMemoryBarrierCount = 2,
+                .pImageMemoryBarriers = encodeBarriers,
+            };
+            vkCmdPipelineBarrier2(cmdBuffer, &depInfo);
+        }
 
         // Transition swapchain image back to present
         VkImageMemoryBarrier srcPostBarrier = {
@@ -221,7 +324,7 @@ public:
         };
 
         vkCmdPipelineBarrier(cmdBuffer,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            hasEncodeImage ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
             0, 0, nullptr, 0, nullptr, 1, &srcPostBarrier);
     }
@@ -244,8 +347,17 @@ public:
 
         vkDeviceWaitIdle(device);
 
-        // Destroy NV12 images (separate Y and UV planes)
+        // Destroy NV12 images (separate Y and UV planes, and encode image)
         for (auto& img : nv12Images) {
+            if (img.encodeView != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, img.encodeView, nullptr);
+            }
+            if (img.encodeImage != VK_NULL_HANDLE) {
+                vkDestroyImage(device, img.encodeImage, nullptr);
+            }
+            if (img.encodeMemory != VK_NULL_HANDLE) {
+                vkFreeMemory(device, img.encodeMemory, nullptr);
+            }
             if (img.viewUV != VK_NULL_HANDLE) {
                 vkDestroyImageView(device, img.viewUV, nullptr);
             }
@@ -336,6 +448,7 @@ private:
     // Create separate Y and UV images for compute shader storage output
     // Note: Multi-planar formats (like VK_FORMAT_G8_B8R8_2PLANE_420_UNORM) do not support
     // VK_IMAGE_USAGE_STORAGE_BIT, so we use separate single-plane images instead
+    // Additionally, we create a proper multi-planar NV12 image for video encoding
     bool createNV12Images(uint32_t count) {
         nv12Images.resize(count);
 
@@ -344,9 +457,11 @@ private:
             img.width = width;
             img.height = height;
 
-            // Create Y plane image (R8_UNORM, full resolution) with STORAGE_BIT support
+            // Create Y plane image (R8_UNORM, full resolution) - STORAGE only, no video encode
             VkImageCreateInfo yImageInfo = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
                 .imageType = VK_IMAGE_TYPE_2D,
                 .format = VK_FORMAT_R8_UNORM,
                 .extent = { width, height, 1 },
@@ -384,9 +499,11 @@ private:
 
             vkBindImageMemory(device, img.imageY, img.memoryY, 0);
 
-            // Create UV plane image (R8G8_UNORM, half resolution) with STORAGE_BIT support
+            // Create UV plane image (R8G8_UNORM, half resolution) - STORAGE only, no video encode
             VkImageCreateInfo uvImageInfo = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
                 .imageType = VK_IMAGE_TYPE_2D,
                 .format = VK_FORMAT_R8G8_UNORM,
                 .extent = { width / 2, height / 2, 1 },
@@ -453,9 +570,75 @@ private:
                 std::cerr << "Failed to create UV plane view " << i << std::endl;
                 return false;
             }
+
+            // Create multi-planar NV12 image for video encoding (non-disjoint, regular memory binding)
+            if (videoProfileList != nullptr) {
+                VkImageCreateInfo encodeImageInfo = {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                    .pNext = videoProfileList,
+                    .flags = 0,  // No DISJOINT flag - use regular memory binding
+                    .imageType = VK_IMAGE_TYPE_2D,
+                    .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,  // NV12 format
+                    .extent = { width, height, 1 },
+                    .mipLevels = 1,
+                    .arrayLayers = 1,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR,
+                    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                };
+
+                result = vkCreateImage(device, &encodeImageInfo, nullptr, &img.encodeImage);
+                if (result != VK_SUCCESS) {
+                    std::cerr << "Failed to create encode NV12 image " << i << ": " << result << std::endl;
+                    return false;
+                }
+
+                // Get memory requirements for the non-disjoint multi-planar image
+                VkMemoryRequirements memReqs;
+                vkGetImageMemoryRequirements(device, img.encodeImage, &memReqs);
+
+                VkMemoryAllocateInfo encodeAllocInfo = {
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                    .allocationSize = memReqs.size,
+                    .memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+                };
+
+                result = vkAllocateMemory(device, &encodeAllocInfo, nullptr, &img.encodeMemory);
+                if (result != VK_SUCCESS) {
+                    std::cerr << "Failed to allocate encode image memory " << i << std::endl;
+                    return false;
+                }
+
+                // Bind memory (regular binding for non-disjoint image)
+                result = vkBindImageMemory(device, img.encodeImage, img.encodeMemory, 0);
+                if (result != VK_SUCCESS) {
+                    std::cerr << "Failed to bind encode image memory " << i << ": " << result << std::endl;
+                    return false;
+                }
+
+                // Create image view for encode (viewing all planes)
+                VkImageViewCreateInfo encodeViewInfo = {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                    .pNext = nullptr,
+                    .image = img.encodeImage,
+                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                    .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+                    .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+                };
+
+                result = vkCreateImageView(device, &encodeViewInfo, nullptr, &img.encodeView);
+                if (result != VK_SUCCESS) {
+                    std::cerr << "Failed to create encode image view " << i << ": " << result << std::endl;
+                    return false;
+                }
+            }
         }
 
-        std::cout << "Created " << count << " Y+UV image pairs (" << width << "x" << height << ")" << std::endl;
+        std::cout << "Created " << count << " Y+UV image pairs (" << width << "x" << height << ")"
+                  << (videoProfileList ? " with NV12 encode images" : "") << std::endl;
         return true;
     }
 
@@ -737,6 +920,16 @@ private:
     PFN_vkCreateVideoSessionParametersKHR fp_vkCreateVideoSessionParametersKHR = nullptr;
     PFN_vkDestroyVideoSessionParametersKHR fp_vkDestroyVideoSessionParametersKHR = nullptr;
     PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR fp_vkGetPhysicalDeviceVideoCapabilitiesKHR = nullptr;
+    PFN_vkCmdBeginVideoCodingKHR fp_vkCmdBeginVideoCodingKHR = nullptr;
+    PFN_vkCmdEndVideoCodingKHR fp_vkCmdEndVideoCodingKHR = nullptr;
+    PFN_vkCmdEncodeVideoKHR fp_vkCmdEncodeVideoKHR = nullptr;
+    PFN_vkCmdControlVideoCodingKHR fp_vkCmdControlVideoCodingKHR = nullptr;
+    
+    // Encode state
+    bool sessionReset = false;
+    VkCommandBuffer encodeCommandBuffer = VK_NULL_HANDLE;
+    VkFence encodeFence = VK_NULL_HANDLE;
+    VkSemaphore encodeSemaphore = VK_NULL_HANDLE;
     
     // Video session resources
     VkVideoSessionKHR videoSession = VK_NULL_HANDLE;
@@ -813,9 +1006,16 @@ public:
         
         fp_vkGetPhysicalDeviceVideoCapabilitiesKHR = reinterpret_cast<PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR>(vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR"));
 
+        // Load encode command function pointers
+        fp_vkCmdBeginVideoCodingKHR = reinterpret_cast<PFN_vkCmdBeginVideoCodingKHR>(vkGetDeviceProcAddr(device, "vkCmdBeginVideoCodingKHR"));
+        fp_vkCmdEndVideoCodingKHR = reinterpret_cast<PFN_vkCmdEndVideoCodingKHR>(vkGetDeviceProcAddr(device, "vkCmdEndVideoCodingKHR"));
+        fp_vkCmdEncodeVideoKHR = reinterpret_cast<PFN_vkCmdEncodeVideoKHR>(vkGetDeviceProcAddr(device, "vkCmdEncodeVideoKHR"));
+        fp_vkCmdControlVideoCodingKHR = reinterpret_cast<PFN_vkCmdControlVideoCodingKHR>(vkGetDeviceProcAddr(device, "vkCmdControlVideoCodingKHR"));
+
         if (!fp_vkCreateVideoSessionKHR || !fp_vkDestroyVideoSessionKHR || !fp_vkGetVideoSessionMemoryRequirementsKHR ||
             !fp_vkBindVideoSessionMemoryKHR || !fp_vkCreateVideoSessionParametersKHR || !fp_vkDestroyVideoSessionParametersKHR ||
-            !fp_vkGetPhysicalDeviceVideoCapabilitiesKHR) {
+            !fp_vkGetPhysicalDeviceVideoCapabilitiesKHR || !fp_vkCmdBeginVideoCodingKHR || !fp_vkCmdEndVideoCodingKHR ||
+            !fp_vkCmdEncodeVideoKHR || !fp_vkCmdControlVideoCodingKHR) {
             std::cerr << "Failed to load Vulkan Video extension functions" << std::endl;
             return false;
         }
@@ -836,8 +1036,9 @@ public:
         return vulkanDevice && vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
     }
     
-    // Query video encode capabilities
-    bool queryCapabilities() {
+    // Setup video profiles (call before creating resources that need video profile)
+    // This sets up the profile structures without creating the video session
+    bool setupProfiles() {
         if (!vulkanDevice) return false;
         
         // Setup H.264 profile (Main profile, level 4.1)
@@ -864,6 +1065,18 @@ public:
             .profileCount = 1,
             .pProfiles = &videoProfile,
         };
+        
+        return true;
+    }
+    
+    // Query video encode capabilities
+    bool queryCapabilities() {
+        if (!vulkanDevice) return false;
+        
+        // Ensure profiles are set up
+        if (videoProfile.sType != VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR) {
+            setupProfiles();
+        }
         
         // Query capabilities
         h264Capabilities = {
@@ -1276,7 +1489,88 @@ public:
             return false;
         }
         
+        // Step 8: Create encode command buffer and sync objects
+        if (!createEncodeSyncObjects()) {
+            std::cerr << "Failed to create encode sync objects" << std::endl;
+            return false;
+        }
+        
         std::cout << "Video encode session fully initialized" << std::endl;
+        return true;
+    }
+    
+    // Encode a single frame
+    // srcImage: NV12 multi-planar image (G8_B8R8_2PLANE_420_UNORM)
+    // srcView: View of the NV12 image
+    // srcQueueFamily: queue family index that released ownership (for cross-queue sync)
+    bool encodeFrame(VkImage srcImage, VkImageView srcView,
+                     VkQueue graphicsQueue, VkSemaphore waitSemaphore = VK_NULL_HANDLE,
+                     uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
+        if (!isReady()) return false;
+        
+        // Wait for previous encode to complete
+        vkWaitForFences(device, 1, &encodeFence, VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &encodeFence);
+        
+        // Reset command buffer
+        vkResetCommandBuffer(encodeCommandBuffer, 0);
+        
+        // Begin command buffer
+        VkCommandBufferBeginInfo beginInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        VK_CHECK_RESULT(vkBeginCommandBuffer(encodeCommandBuffer, &beginInfo));
+        
+        // Record encode commands with queue family ownership transfer if needed
+        recordEncodeCommands(encodeCommandBuffer, srcImage, srcView, srcQueueFamily);
+        
+        VK_CHECK_RESULT(vkEndCommandBuffer(encodeCommandBuffer));
+        
+        // Submit encode command buffer
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        VkSubmitInfo submitInfo = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = waitSemaphore != VK_NULL_HANDLE ? 1u : 0u,
+            .pWaitSemaphores = waitSemaphore != VK_NULL_HANDLE ? &waitSemaphore : nullptr,
+            .pWaitDstStageMask = waitSemaphore != VK_NULL_HANDLE ? &waitStage : nullptr,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &encodeCommandBuffer,
+            .signalSemaphoreCount = 0,
+            .pSignalSemaphores = nullptr,
+        };
+        
+        VkResult result = vkQueueSubmit(videoQueue, 1, &submitInfo, encodeFence);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to submit encode command buffer: " << result << std::endl;
+            return false;
+        }
+        
+        // Wait for encode to complete and read back results
+        vkWaitForFences(device, 1, &encodeFence, VK_TRUE, UINT64_MAX);
+        
+        // Query encode results
+        struct EncodeFeedback {
+            uint32_t offset;
+            uint32_t size;
+            uint32_t status;
+        } feedback;
+        
+        result = vkGetQueryPoolResults(device, queryPool, 0, 1, sizeof(feedback), &feedback,
+            sizeof(feedback), VK_QUERY_RESULT_WAIT_BIT);
+        
+        if (result != VK_SUCCESS || feedback.status != VK_QUERY_RESULT_STATUS_COMPLETE_KHR) {
+            std::cerr << "Encode query failed: result=" << result << ", status=" << feedback.status << std::endl;
+            return false;
+        }
+        
+        // Write encoded data to file
+        if (feedback.size > 0 && bitstreamMappedPtr) {
+            const uint8_t* data = static_cast<const uint8_t*>(bitstreamMappedPtr) + feedback.offset;
+            writeNALUnit(data, feedback.size);
+        }
+        
+        frameCounter++;
         return true;
     }
     
@@ -1347,6 +1641,16 @@ public:
         if (videoCommandPool != VK_NULL_HANDLE) {
             vkDestroyCommandPool(device, videoCommandPool, nullptr);
             videoCommandPool = VK_NULL_HANDLE;
+        }
+        
+        if (encodeFence != VK_NULL_HANDLE) {
+            vkDestroyFence(device, encodeFence, nullptr);
+            encodeFence = VK_NULL_HANDLE;
+        }
+        
+        if (encodeSemaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device, encodeSemaphore, nullptr);
+            encodeSemaphore = VK_NULL_HANDLE;
         }
         
         for (auto& mem : sessionMemory) {
@@ -1439,6 +1743,260 @@ private:
         std::cout << "Video command pool created" << std::endl;
         return true;
     }
+    
+    // Create command buffer and synchronization objects for encoding
+    bool createEncodeSyncObjects() {
+        // Allocate command buffer
+        VkCommandBufferAllocateInfo allocInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = videoCommandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        
+        VkResult result = vkAllocateCommandBuffers(device, &allocInfo, &encodeCommandBuffer);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to allocate encode command buffer: " << result << std::endl;
+            return false;
+        }
+        
+        // Create fence
+        VkFenceCreateInfo fenceInfo = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,  // Start signaled so first wait doesn't block
+        };
+        
+        result = vkCreateFence(device, &fenceInfo, nullptr, &encodeFence);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create encode fence: " << result << std::endl;
+            return false;
+        }
+        
+        // Create semaphore
+        VkSemaphoreCreateInfo semaphoreInfo = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        };
+        
+        result = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &encodeSemaphore);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create encode semaphore: " << result << std::endl;
+            return false;
+        }
+        
+        std::cout << "Encode sync objects created" << std::endl;
+        return true;
+    }
+    
+    // Record video encode commands into command buffer
+    // srcImage: the NV12 multi-planar source image
+    // srcView: view of the NV12 image
+    // srcQueueFamily: the queue family that released ownership (compute/graphics)
+    // If srcQueueFamily differs from video queue family, we need to acquire ownership
+    void recordEncodeCommands(VkCommandBuffer cmdBuffer, VkImage srcImage, VkImageView srcView,
+                              uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
+        bool isIDR = isNextFrameIDR();
+        int32_t slotIndex = 0;  // Use slot 0 for I-frame only encoding
+        
+        // DPB slot reference
+        DPBSlot& dpbSlot = dpbSlots[slotIndex];
+        
+        // Determine if we need to acquire ownership from another queue family
+        bool needsOwnershipAcquire = (srcQueueFamily != VK_QUEUE_FAMILY_IGNORED) && 
+                                      (srcQueueFamily != videoQueueFamilyIndex);
+        
+        // Transition source image planes - acquire ownership if needed
+        // Image is already in VIDEO_ENCODE_SRC_KHR layout from compute stage
+        std::array<VkImageMemoryBarrier2, 3> preBarriers = {{
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,  // Already synchronized via semaphore
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+                .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+                .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+                .srcQueueFamilyIndex = needsOwnershipAcquire ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = needsOwnershipAcquire ? videoQueueFamilyIndex : VK_QUEUE_FAMILY_IGNORED,
+                .image = srcImage,
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+                .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+                .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+                .srcQueueFamilyIndex = needsOwnershipAcquire ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = needsOwnershipAcquire ? videoQueueFamilyIndex : VK_QUEUE_FAMILY_IGNORED,
+                .image = srcImage,
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = dpbSlot.image,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+            }
+        }};
+        
+        VkDependencyInfo dependencyInfo = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = static_cast<uint32_t>(preBarriers.size()),
+            .pImageMemoryBarriers = preBarriers.data(),
+        };
+        
+        vkCmdPipelineBarrier2(cmdBuffer, &dependencyInfo);
+        
+        // H.264 slice header info
+        StdVideoEncodeH264SliceHeader sliceHeader = {};
+        sliceHeader.slice_type = isIDR ? STD_VIDEO_H264_SLICE_TYPE_I : STD_VIDEO_H264_SLICE_TYPE_I;
+        sliceHeader.cabac_init_idc = STD_VIDEO_H264_CABAC_INIT_IDC_0;
+        sliceHeader.disable_deblocking_filter_idc = STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED;
+        
+        StdVideoEncodeH264ReferenceListsInfo refListInfo = {};
+        
+        StdVideoEncodeH264PictureInfo stdPicInfo = {};
+        stdPicInfo.flags.IdrPicFlag = isIDR ? 1 : 0;
+        stdPicInfo.flags.is_reference = 1;
+        stdPicInfo.seq_parameter_set_id = 0;
+        stdPicInfo.pic_parameter_set_id = 0;
+        stdPicInfo.idr_pic_id = isIDR ? idrPicId++ : 0;
+        stdPicInfo.primary_pic_type = STD_VIDEO_H264_PICTURE_TYPE_I;
+        stdPicInfo.frame_num = static_cast<uint32_t>(frameCounter % 256);
+        stdPicInfo.PicOrderCnt = static_cast<int32_t>(frameCounter * 2);
+        stdPicInfo.pRefLists = &refListInfo;
+        
+        // H.264 NALU slice info
+        VkVideoEncodeH264NaluSliceInfoKHR sliceInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_NALU_SLICE_INFO_KHR,
+            .pNext = nullptr,
+            .constantQp = static_cast<int32_t>(config.qp),
+            .pStdSliceHeader = &sliceHeader,
+        };
+        
+        // H.264 picture info
+        VkVideoEncodeH264PictureInfoKHR h264PicInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_PICTURE_INFO_KHR,
+            .pNext = nullptr,
+            .naluSliceEntryCount = 1,
+            .pNaluSliceEntries = &sliceInfo,
+            .pStdPictureInfo = &stdPicInfo,
+            .generatePrefixNalu = VK_FALSE,
+        };
+        
+        // DPB picture resource
+        VkVideoPictureResourceInfoKHR dpbPicResource = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
+            .pNext = nullptr,
+            .codedOffset = { 0, 0 },
+            .codedExtent = { config.width, config.height },
+            .baseArrayLayer = 0,
+            .imageViewBinding = dpbSlot.view,
+        };
+        
+        // H.264 DPB slot info
+        StdVideoEncodeH264ReferenceInfo stdRefInfo = {};
+        stdRefInfo.primary_pic_type = STD_VIDEO_H264_PICTURE_TYPE_I;
+        stdRefInfo.FrameNum = static_cast<uint32_t>(frameCounter % 256);
+        stdRefInfo.PicOrderCnt = static_cast<int32_t>(frameCounter * 2);
+        
+        VkVideoEncodeH264DpbSlotInfoKHR h264DpbSlotInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
+            .pNext = nullptr,
+            .pStdReferenceInfo = &stdRefInfo,
+        };
+        
+        // Reference slot for setup (output)
+        VkVideoReferenceSlotInfoKHR setupSlot = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+            .pNext = &h264DpbSlotInfo,
+            .slotIndex = slotIndex,
+            .pPictureResource = &dpbPicResource,
+        };
+        
+        // Source picture resource (input frame)
+        VkVideoPictureResourceInfoKHR srcPicResource = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
+            .pNext = nullptr,
+            .codedOffset = { 0, 0 },
+            .codedExtent = { config.width, config.height },
+            .baseArrayLayer = 0,
+            .imageViewBinding = srcView,  // Use NV12 image view as source
+        };
+        
+        // Encode info
+        VkVideoEncodeInfoKHR encodeInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR,
+            .pNext = &h264PicInfo,
+            .flags = 0,
+            .dstBuffer = bitstreamBuffer,
+            .dstBufferOffset = 0,
+            .dstBufferRange = bitstreamBufferSize,
+            .srcPictureResource = srcPicResource,
+            .pSetupReferenceSlot = &setupSlot,
+            .referenceSlotCount = 0,
+            .pReferenceSlots = nullptr,
+            .precedingExternallyEncodedBytes = 0,
+        };
+        
+        // For IDR, include reference slot in begin coding
+        VkVideoReferenceSlotInfoKHR beginSlot = setupSlot;
+        beginSlot.slotIndex = -1;  // Mark as not yet assigned
+        
+        // Begin video coding
+        VkVideoBeginCodingInfoKHR beginInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
+            .pNext = nullptr,
+            .flags = 0,
+            .videoSession = videoSession,
+            .videoSessionParameters = sessionParams,
+            .referenceSlotCount = 1,
+            .pReferenceSlots = &beginSlot,
+        };
+        
+        fp_vkCmdBeginVideoCodingKHR(cmdBuffer, &beginInfo);
+        
+        // Reset session on first frame
+        if (!sessionReset) {
+            VkVideoCodingControlInfoKHR controlInfo = {
+                .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
+                .pNext = nullptr,
+                .flags = VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR,
+            };
+            fp_vkCmdControlVideoCodingKHR(cmdBuffer, &controlInfo);
+            sessionReset = true;
+        }
+        
+        // Reset query
+        vkCmdResetQueryPool(cmdBuffer, queryPool, 0, 1);
+        
+        // Begin query
+        vkCmdBeginQuery(cmdBuffer, queryPool, 0, 0);
+        
+        // Encode
+        fp_vkCmdEncodeVideoKHR(cmdBuffer, &encodeInfo);
+        
+        // End query
+        vkCmdEndQuery(cmdBuffer, queryPool, 0);
+        
+        // End video coding
+        VkVideoEndCodingInfoKHR endInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR,
+            .pNext = nullptr,
+            .flags = 0,
+        };
+        
+        fp_vkCmdEndVideoCodingKHR(cmdBuffer, &endInfo);
+    }
 };
 
 class VulkanExample : public VulkanExampleBase
@@ -1454,16 +2012,34 @@ public:
 	} uniformData;
 	std::array<vks::Buffer, maxConcurrentFrames> uniformBuffers;
 
+	// Feature structures (must persist until device creation)
+	VkPhysicalDeviceSynchronization2Features synchronization2Features{};
+	VkPhysicalDeviceVideoMaintenance1FeaturesKHR videoMaintenance1Features{};
+
 	VkPipelineLayout pipelineLayout{ VK_NULL_HANDLE };
 	VkPipeline pipeline{ VK_NULL_HANDLE };
 	VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
 	std::array<VkDescriptorSet, maxConcurrentFrames> descriptorSets{};
 
 	bool screenshotSaved{ false };
+	bool recordingEnabled{ false };
+	uint64_t encodedFrameCount{ 0 };
 
 	// Video encoding resources
 	RGBtoNV12Converter rgbToNv12Converter;
 	VulkanH264Encoder h264Encoder;
+	
+	// Command buffer for RGB to NV12 conversion (runs on graphics queue)
+	VkCommandBuffer colorConvertCmdBuffer{ VK_NULL_HANDLE };
+	VkFence colorConvertFence{ VK_NULL_HANDLE };
+	
+	// Cross-queue synchronization semaphores
+	VkSemaphore renderCompleteSemaphore{ VK_NULL_HANDLE };      // Graphics -> Compute
+	VkSemaphore colorConvertCompleteSemaphore{ VK_NULL_HANDLE }; // Compute -> Video Encode
+	
+	// Queue family indices for ownership transfers
+	uint32_t graphicsQueueFamily{ VK_QUEUE_FAMILY_IGNORED };
+	uint32_t videoQueueFamily{ VK_QUEUE_FAMILY_IGNORED };
 
 	VulkanExample() : VulkanExampleBase(), uniformBuffers{}
 	{
@@ -1481,6 +2057,21 @@ public:
 	~VulkanExample() override
 	{
 		if (device) {
+			// Wait for any pending encode operations
+			vkDeviceWaitIdle(device);
+			
+			// Cleanup color conversion resources
+			if (colorConvertFence != VK_NULL_HANDLE) {
+				vkDestroyFence(device, colorConvertFence, nullptr);
+			}
+			if (renderCompleteSemaphore != VK_NULL_HANDLE) {
+				vkDestroySemaphore(device, renderCompleteSemaphore, nullptr);
+			}
+			if (colorConvertCompleteSemaphore != VK_NULL_HANDLE) {
+				vkDestroySemaphore(device, colorConvertCompleteSemaphore, nullptr);
+			}
+			// colorConvertCmdBuffer is freed with the command pool
+			
 			vkDestroyPipeline(device, pipeline, nullptr);
 			vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 			vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -1489,23 +2080,42 @@ public:
 			}
 		}
 	}
+    void getEnabledFeatures() override
+	{
+		// Enable synchronization2 feature for vkCmdPipelineBarrier2
+		// We always add this to the pNext chain - if the extension isn't supported,
+		// getEnabledExtensions() won't add it and device creation will ignore this
+		synchronization2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+		synchronization2Features.pNext = deviceCreatepNextChain;
+		synchronization2Features.synchronization2 = VK_TRUE;
+		deviceCreatepNextChain = &synchronization2Features;
+
+		// Enable video maintenance1 feature
+		videoMaintenance1Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR;
+		videoMaintenance1Features.pNext = deviceCreatepNextChain;
+		videoMaintenance1Features.videoMaintenance1 = VK_TRUE;
+		deviceCreatepNextChain = &videoMaintenance1Features;
+	}
     void getEnabledExtensions() override
 	{
 	    // Check for Vulkan Video extensions
 	    bool videoQueue = vulkanDevice->extensionSupported(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
 	    bool encodeQueue = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME);
 		bool sync2 = vulkanDevice->extensionSupported(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+		bool maintenance1 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME);
 
 	    std::cout << "Vulkan Video Encoding Support:" << std::endl;
 	    std::cout << "  Base Video Queue: " << (videoQueue ? "Yes" : "No") << std::endl;
 	    std::cout << "  Encode Queue:     " << (encodeQueue ? "Yes" : "No") << std::endl;
 		std::cout << "  Synchronization2: " << (sync2 ? "Yes" : "No") << std::endl;
+		std::cout << "  Maintenance1:     " << (maintenance1 ? "Yes" : "No") << std::endl;
 
 	    // Check for specific encoders
-        if (videoQueue && encodeQueue && sync2) {
+        if (videoQueue && encodeQueue && sync2 && maintenance1) {
             enabledDeviceExtensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
             enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME);
             enabledDeviceExtensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+            enabledDeviceExtensions.push_back(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME);
 
             std::cout << "  Supported Encoders:" << std::endl;
             bool h264 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
@@ -1840,24 +2450,13 @@ public:
 	void prepareVideoEncoding()
 	{
 		// Check if video encoding is supported
-		if (!vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME)) {
-			std::cout << "H.264 video encoding not supported, skipping encoder setup" << std::endl;
+		if (!vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME) ||
+		    !vulkanDevice->extensionSupported(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME)) {
+			std::cout << "H.264 video encoding or maintenance1 not supported, skipping encoder setup" << std::endl;
 			return;
 		}
 
-		// Initialize RGB to NV12 converter
-		std::vector<VkImage> swapchainImages;
-		for (uint32_t i = 0; i < swapChain.imageCount; i++) {
-			swapchainImages.push_back(swapChain.images[i]);
-		}
-
-		if (!rgbToNv12Converter.initialize(vulkanDevice, width, height, 
-				swapChain.colorFormat, swapchainImages, getShadersPath())) {
-			std::cerr << "Failed to initialize RGB to NV12 converter" << std::endl;
-			return;
-		}
-
-		// Initialize H264 encoder
+		// Initialize H264 encoder first (to get access to video profiles)
 		VulkanH264Encoder::EncoderConfig encoderConfig;
 		encoderConfig.width = width;
 		encoderConfig.height = height;
@@ -1871,15 +2470,56 @@ public:
 			return;
 		}
 
+		// Setup video profiles before creating NV12 images that need the profile list
+		if (!h264Encoder.setupProfiles()) {
+			std::cerr << "Failed to setup video profiles" << std::endl;
+			return;
+		}
+
+		// Initialize RGB to NV12 converter with video profile for VIDEO_ENCODE_SRC usage
+		std::vector<VkImage> swapchainImages;
+		for (uint32_t i = 0; i < swapChain.imageCount; i++) {
+			swapchainImages.push_back(swapChain.images[i]);
+		}
+
+		if (!rgbToNv12Converter.initialize(vulkanDevice, width, height, 
+				swapChain.colorFormat, swapchainImages, getShadersPath(),
+				&h264Encoder.getVideoProfileList())) {
+			std::cerr << "Failed to initialize RGB to NV12 converter" << std::endl;
+			return;
+		}
+
 		// Setup video encode session (query capabilities, create session, DPB, bitstream buffer, etc.)
 		if (!h264Encoder.setupVideoSession()) {
 			std::cerr << "Failed to setup video encode session" << std::endl;
 			return;
 		}
 
+		// Create command buffer for color conversion
+		VkCommandBufferAllocateInfo cmdBufAllocInfo = vks::initializers::commandBufferAllocateInfo(cmdPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1);
+		VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocInfo, &colorConvertCmdBuffer));
+		
+		// Create fence for color conversion synchronization
+		VkFenceCreateInfo fenceInfo = vks::initializers::fenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
+		VK_CHECK_RESULT(vkCreateFence(device, &fenceInfo, nullptr, &colorConvertFence));
+		
+		// Create semaphores for cross-queue synchronization
+		VkSemaphoreCreateInfo semaphoreInfo = vks::initializers::semaphoreCreateInfo();
+		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderCompleteSemaphore));
+		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &colorConvertCompleteSemaphore));
+		
+		// Store queue family indices for potential ownership transfers
+		graphicsQueueFamily = vulkanDevice->queueFamilyIndices.graphics;
+		videoQueueFamily = h264Encoder.getVideoQueueFamilyIndex();
+		
+		bool sameQueueFamily = (graphicsQueueFamily == videoQueueFamily);
 		std::cout << "Video encoding pipeline initialized successfully" << std::endl;
 		std::cout << "  Resolution: " << width << "x" << height << std::endl;
 		std::cout << "  Output: " << encoderConfig.outputPath << std::endl;
+		std::cout << "  Graphics queue family: " << graphicsQueueFamily << std::endl;
+		std::cout << "  Video queue family: " << videoQueueFamily << std::endl;
+		std::cout << "  Cross-queue transfer needed: " << (sameQueueFamily ? "No" : "Yes") << std::endl;
+		std::cout << "  Press 'R' to start/stop recording" << std::endl;
 	}
 
 	void buildCommandBuffer()
@@ -1924,6 +2564,58 @@ public:
 		updateUniformBuffers();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
+		
+	    if (!recordingEnabled)
+	        recordingEnabled = true;  // Auto-start recording for demonstration purposes
+		// Encode frame if recording is enabled
+		if (recordingEnabled && h264Encoder.isReady() && rgbToNv12Converter.isReady()) {
+			encodeCurrentFrame();
+		}
+	}
+	
+	// Encode the current frame to H.264
+	void encodeCurrentFrame()
+	{
+		// Wait for previous color conversion to complete
+		vkWaitForFences(device, 1, &colorConvertFence, VK_TRUE, UINT64_MAX);
+		vkResetFences(device, 1, &colorConvertFence);
+		
+		// Record color conversion commands
+		vkResetCommandBuffer(colorConvertCmdBuffer, 0);
+		
+		VkCommandBufferBeginInfo beginInfo = vks::initializers::commandBufferBeginInfo();
+		VK_CHECK_RESULT(vkBeginCommandBuffer(colorConvertCmdBuffer, &beginInfo));
+		
+		// Dispatch RGB to NV12 conversion
+		// Pass queue family info for ownership transfer if needed
+		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, currentImageIndex, 
+		                                   swapChain.images[currentImageIndex],
+		                                   graphicsQueueFamily, videoQueueFamily);
+		
+		VK_CHECK_RESULT(vkEndCommandBuffer(colorConvertCmdBuffer));
+		
+		// Submit color conversion with semaphore signaling for cross-queue sync
+		VkSubmitInfo submitInfo = vks::initializers::submitInfo();
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &colorConvertCmdBuffer;
+		
+		// Signal semaphore when color conversion is complete
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = &colorConvertCompleteSemaphore;
+		
+		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, colorConvertFence));
+		
+		// Get NV12 images for encoding
+		const auto& nv12Image = rgbToNv12Converter.getNV12Image(currentImageIndex);
+		
+		// Encode the frame - pass semaphore to wait on before encoding
+		// The encoder will wait for color conversion to complete via semaphore
+		// Pass graphicsQueueFamily for ownership acquire on video queue
+		if (h264Encoder.encodeFrame(nv12Image.encodeImage, nv12Image.encodeView, queue,
+		                            colorConvertCompleteSemaphore,
+		                            graphicsQueueFamily)) {
+			encodedFrameCount++;
+		}
 	}
 
 	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
@@ -1934,6 +2626,36 @@ public:
 			}
 			if (screenshotSaved) {
 				overlay->text("Screenshot saved as screenshot.ppm");
+			}
+			
+			// Video recording controls
+			if (h264Encoder.isReady()) {
+				if (overlay->button(recordingEnabled ? "Stop Recording" : "Start Recording")) {
+					recordingEnabled = !recordingEnabled;
+					if (recordingEnabled) {
+						std::cout << "Recording started..." << std::endl;
+					} else {
+						std::cout << "Recording stopped. Encoded " << encodedFrameCount << " frames." << std::endl;
+					}
+				}
+				if (recordingEnabled) {
+					overlay->text("Recording: %lu frames", encodedFrameCount);
+				}
+			}
+		}
+	}
+	
+	void keyPressed(uint32_t key) override
+	{
+		VulkanExampleBase::keyPressed(key);
+		
+		// Toggle recording with 'R' key (key code 82 = 'R')
+		if (key == 82 && h264Encoder.isReady()) {
+			recordingEnabled = !recordingEnabled;
+			if (recordingEnabled) {
+				std::cout << "Recording started..." << std::endl;
+			} else {
+				std::cout << "Recording stopped. Encoded " << encodedFrameCount << " frames." << std::endl;
 			}
 		}
 	}
