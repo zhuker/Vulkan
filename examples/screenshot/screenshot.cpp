@@ -11,6 +11,560 @@
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
 
+// H264 Encoder Infrastructure Class
+// Manages Vulkan Video encoding resources for H.264 output
+class VulkanH264Encoder {
+public:
+    // Encoder configuration
+    struct EncoderConfig {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t frameRate = 60;
+        uint32_t gopSize = 1;        // All I-frames for simplicity
+        uint32_t qp = 23;            // Constant QP for CQP rate control
+        std::string outputPath = "recording.h264";
+    };
+
+    // Per-frame encoding state
+    struct EncodeFrame {
+        VkImage nv12Image = VK_NULL_HANDLE;
+        VkDeviceMemory nv12Memory = VK_NULL_HANDLE;
+        VkImageView nv12ViewY = VK_NULL_HANDLE;      // Y plane view
+        VkImageView nv12ViewUV = VK_NULL_HANDLE;     // UV plane view
+        VkImageView nv12ViewFull = VK_NULL_HANDLE;   // Full image view for encode
+    };
+
+    // DPB (Decoded Picture Buffer) slot for reference frames
+    struct DPBSlot {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        int32_t slotIndex = -1;
+        bool inUse = false;
+    };
+
+private:
+    // Device references (not owned)
+    VkDevice device = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    vks::VulkanDevice* vulkanDevice = nullptr;
+    
+    // Video session resources
+    VkVideoSessionKHR videoSession = VK_NULL_HANDLE;
+    VkVideoSessionParametersKHR sessionParams = VK_NULL_HANDLE;
+    std::vector<VkDeviceMemory> sessionMemory;
+    
+    // Video profile
+    VkVideoProfileInfoKHR videoProfile{};
+    VkVideoProfileListInfoKHR videoProfileList{};
+    VkVideoEncodeH264ProfileInfoKHR h264Profile{};
+    
+    // Capabilities
+    VkVideoCapabilitiesKHR videoCapabilities{};
+    VkVideoEncodeCapabilitiesKHR encodeCapabilities{};
+    VkVideoEncodeH264CapabilitiesKHR h264Capabilities{};
+    
+    // DPB resources
+    static constexpr uint32_t MAX_DPB_SLOTS = 16;
+    std::array<DPBSlot, MAX_DPB_SLOTS> dpbSlots{};
+    uint32_t activeDPBSlots = 0;
+    
+    // Bitstream output buffer
+    VkBuffer bitstreamBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory bitstreamMemory = VK_NULL_HANDLE;
+    VkDeviceSize bitstreamBufferSize = 0;
+    void* bitstreamMappedPtr = nullptr;
+    
+    // SPS/PPS data (generated once and reused)
+    std::vector<uint8_t> spsData;
+    std::vector<uint8_t> ppsData;
+    bool spsGenerated = false;
+    
+    // Query pool for encode results
+    VkQueryPool queryPool = VK_NULL_HANDLE;
+    
+    // Frame state
+    uint64_t frameCounter = 0;
+    uint64_t lastIDRFrame = 0;
+    uint16_t idrPicId = 0;
+    
+    // Configuration
+    EncoderConfig config{};
+    
+    // Output file
+    std::ofstream outputFile;
+    bool isInitialized = false;
+    
+    // Video queue family
+    uint32_t videoQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    VkQueue videoQueue = VK_NULL_HANDLE;
+
+public:
+    VulkanH264Encoder() = default;
+    
+    ~VulkanH264Encoder() {
+        cleanup();
+    }
+    
+    // Initialize the encoder
+    bool initialize(vks::VulkanDevice* vulkanDevice, const EncoderConfig& cfg) {
+        this->vulkanDevice = vulkanDevice;
+        this->device = vulkanDevice->logicalDevice;
+        this->physicalDevice = vulkanDevice->physicalDevice;
+        this->config = cfg;
+        
+        // Open output file
+        outputFile.open(config.outputPath, std::ios::binary | std::ios::trunc);
+        if (!outputFile.is_open()) {
+            std::cerr << "Failed to open output file: " << config.outputPath << std::endl;
+            return false;
+        }
+        
+        isInitialized = true;
+        return true;
+    }
+    
+    // Check if H264 encoding is supported
+    bool isH264Supported() const {
+        return vulkanDevice && vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
+    }
+    
+    // Query video encode capabilities
+    bool queryCapabilities() {
+        if (!vulkanDevice) return false;
+        
+        // Setup H.264 profile (Main profile, level 4.1)
+        h264Profile = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_PROFILE_INFO_KHR,
+            .pNext = nullptr,
+            .stdProfileIdc = STD_VIDEO_H264_PROFILE_IDC_MAIN,
+        };
+        
+        // Setup video profile
+        videoProfile = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
+            .pNext = &h264Profile,
+            .videoCodecOperation = VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR,
+            .chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
+            .lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
+            .chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
+        };
+        
+        // Setup profile list for resource creation
+        videoProfileList = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR,
+            .pNext = nullptr,
+            .profileCount = 1,
+            .pProfiles = &videoProfile,
+        };
+        
+        // Query capabilities
+        h264Capabilities = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_CAPABILITIES_KHR,
+            .pNext = nullptr,
+        };
+        
+        encodeCapabilities = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
+            .pNext = &h264Capabilities,
+        };
+        
+        videoCapabilities = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR,
+            .pNext = &encodeCapabilities,
+        };
+        
+        VkResult result = vkGetPhysicalDeviceVideoCapabilitiesKHR(
+            physicalDevice, &videoProfile, &videoCapabilities);
+        
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to query video capabilities: " << result << std::endl;
+            return false;
+        }
+        
+        std::cout << "H.264 Encode Capabilities:" << std::endl;
+        std::cout << "  Max coded extent: " << videoCapabilities.maxCodedExtent.width 
+                  << "x" << videoCapabilities.maxCodedExtent.height << std::endl;
+        std::cout << "  Min coded extent: " << videoCapabilities.minCodedExtent.width 
+                  << "x" << videoCapabilities.minCodedExtent.height << std::endl;
+        std::cout << "  Max DPB slots: " << videoCapabilities.maxDpbSlots << std::endl;
+        std::cout << "  Max active refs: " << videoCapabilities.maxActiveReferencePictures << std::endl;
+        std::cout << "  Min bitstream alignment: " << videoCapabilities.minBitstreamBufferSizeAlignment << std::endl;
+        
+        return true;
+    }
+    
+    // Create the video session
+    bool createVideoSession() {
+        if (!device || !isInitialized) return false;
+        
+        // Find video encode queue family
+        uint32_t queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
+        
+        for (uint32_t i = 0; i < queueFamilyCount; i++) {
+            if (queueFamilies[i].queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) {
+                videoQueueFamilyIndex = i;
+                break;
+            }
+        }
+        
+        if (videoQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+            std::cerr << "No video encode queue family found" << std::endl;
+            return false;
+        }
+        
+        // Get video queue
+        vkGetDeviceQueue(device, videoQueueFamilyIndex, 0, &videoQueue);
+        
+        // Create video session
+        VkVideoSessionCreateInfoKHR sessionCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
+            .pNext = nullptr,
+            .queueFamilyIndex = videoQueueFamilyIndex,
+            .flags = 0,
+            .pVideoProfile = &videoProfile,
+            .pictureFormat = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+            .maxCodedExtent = { config.width, config.height },
+            .referencePictureFormat = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+            .maxDpbSlots = std::min(videoCapabilities.maxDpbSlots, MAX_DPB_SLOTS),
+            .maxActiveReferencePictures = videoCapabilities.maxActiveReferencePictures,
+            .pStdHeaderVersion = &videoCapabilities.stdHeaderVersion,
+        };
+        
+        VkResult result = vkCreateVideoSessionKHR(device, &sessionCreateInfo, nullptr, &videoSession);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create video session: " << result << std::endl;
+            return false;
+        }
+        
+        // Bind memory to video session
+        if (!bindVideoSessionMemory()) {
+            return false;
+        }
+        
+        std::cout << "Video session created successfully" << std::endl;
+        return true;
+    }
+    
+    // Create session parameters with SPS/PPS
+    bool createSessionParameters() {
+        if (!videoSession) return false;
+        
+        // H.264 SPS (Sequence Parameter Set)
+        StdVideoH264SequenceParameterSet sps = {};
+        sps.flags.constraint_set0_flag = 0;
+        sps.flags.constraint_set1_flag = 0;
+        sps.flags.constraint_set2_flag = 0;
+        sps.flags.constraint_set3_flag = 0;
+        sps.flags.constraint_set4_flag = 0;
+        sps.flags.constraint_set5_flag = 0;
+        sps.flags.direct_8x8_inference_flag = 1;
+        sps.flags.frame_mbs_only_flag = 1;
+        sps.profile_idc = STD_VIDEO_H264_PROFILE_IDC_MAIN;
+        sps.level_idc = STD_VIDEO_H264_LEVEL_IDC_4_1;
+        sps.seq_parameter_set_id = 0;
+        sps.chroma_format_idc = STD_VIDEO_H264_CHROMA_FORMAT_IDC_420;
+        sps.bit_depth_luma_minus8 = 0;
+        sps.bit_depth_chroma_minus8 = 0;
+        sps.log2_max_frame_num_minus4 = 4;  // max_frame_num = 256
+        sps.pic_order_cnt_type = STD_VIDEO_H264_POC_TYPE_2;
+        sps.log2_max_pic_order_cnt_lsb_minus4 = 0;
+        sps.max_num_ref_frames = 1;
+        sps.pic_width_in_mbs_minus1 = (config.width + 15) / 16 - 1;
+        sps.pic_height_in_map_units_minus1 = (config.height + 15) / 16 - 1;
+        
+        // H.264 PPS (Picture Parameter Set)
+        StdVideoH264PictureParameterSet pps = {};
+        pps.flags.entropy_coding_mode_flag = 1;  // CABAC
+        // pps.flags.pic_order_present_flag = 0;
+        pps.flags.weighted_pred_flag = 0;
+        pps.flags.deblocking_filter_control_present_flag = 1;
+        pps.flags.constrained_intra_pred_flag = 0;
+        pps.flags.redundant_pic_cnt_present_flag = 0;
+        pps.flags.transform_8x8_mode_flag = 0;
+        pps.seq_parameter_set_id = 0;
+        pps.pic_parameter_set_id = 0;
+        pps.num_ref_idx_l0_default_active_minus1 = 0;
+        pps.num_ref_idx_l1_default_active_minus1 = 0;
+        pps.weighted_bipred_idc = STD_VIDEO_H264_WEIGHTED_BIPRED_IDC_DEFAULT;
+        pps.pic_init_qp_minus26 = 0;
+        pps.chroma_qp_index_offset = 0;
+        pps.second_chroma_qp_index_offset = 0;
+        
+        // Vulkan H.264 add info structures
+        VkVideoEncodeH264SessionParametersAddInfoKHR h264AddInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_ADD_INFO_KHR,
+            .pNext = nullptr,
+            .stdSPSCount = 1,
+            .pStdSPSs = &sps,
+            .stdPPSCount = 1,
+            .pStdPPSs = &pps,
+        };
+        
+        VkVideoEncodeH264SessionParametersCreateInfoKHR h264ParamsInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            .pNext = nullptr,
+            .maxStdSPSCount = 1,
+            .maxStdPPSCount = 1,
+            .pParametersAddInfo = &h264AddInfo,
+        };
+        
+        VkVideoSessionParametersCreateInfoKHR paramsCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            .pNext = &h264ParamsInfo,
+            .flags = 0,
+            .videoSessionParametersTemplate = VK_NULL_HANDLE,
+            .videoSession = videoSession,
+        };
+        
+        VkResult result = vkCreateVideoSessionParametersKHR(device, &paramsCreateInfo, nullptr, &sessionParams);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create session parameters: " << result << std::endl;
+            return false;
+        }
+        
+        std::cout << "Session parameters created successfully" << std::endl;
+        return true;
+    }
+    
+    // Allocate bitstream buffer for encoded output
+    bool createBitstreamBuffer() {
+        // Size: worst case ~3 bytes per pixel + alignment
+        VkDeviceSize size = static_cast<VkDeviceSize>(config.width) * config.height * 3;
+        size = (size + videoCapabilities.minBitstreamBufferSizeAlignment - 1) 
+             & ~(videoCapabilities.minBitstreamBufferSizeAlignment - 1);
+        size = std::max(size, static_cast<VkDeviceSize>(1 << 16));  // At least 64KB
+        
+        VkBufferCreateInfo bufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = &videoProfileList,
+            .flags = 0,
+            .size = size,
+            .usage = VK_BUFFER_USAGE_VIDEO_ENCODE_DST_BIT_KHR,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        
+        VkResult result = vkCreateBuffer(device, &bufferInfo, nullptr, &bitstreamBuffer);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create bitstream buffer: " << result << std::endl;
+            return false;
+        }
+        
+        VkMemoryRequirements memReqs;
+        vkGetBufferMemoryRequirements(device, bitstreamBuffer, &memReqs);
+        
+        VkMemoryAllocateInfo allocInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = memReqs.size,
+            .memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, 
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        };
+        
+        result = vkAllocateMemory(device, &allocInfo, nullptr, &bitstreamMemory);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to allocate bitstream memory: " << result << std::endl;
+            return false;
+        }
+        
+        vkBindBufferMemory(device, bitstreamBuffer, bitstreamMemory, 0);
+        vkMapMemory(device, bitstreamMemory, 0, size, 0, &bitstreamMappedPtr);
+        
+        bitstreamBufferSize = size;
+        std::cout << "Bitstream buffer created: " << size << " bytes" << std::endl;
+        return true;
+    }
+    
+    // Create query pool for encode feedback
+    bool createQueryPool() {
+        VkQueryPoolCreateInfo queryPoolInfo = {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext = &videoProfileList,
+            .flags = 0,
+            .queryType = VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR,
+            .queryCount = 2,  // Double-buffering
+        };
+        
+        VkQueryPoolVideoEncodeFeedbackCreateInfoKHR feedbackInfo = {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_VIDEO_ENCODE_FEEDBACK_CREATE_INFO_KHR,
+            .pNext = nullptr,
+            .encodeFeedbackFlags = VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BUFFER_OFFSET_BIT_KHR |
+                                   VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BYTES_WRITTEN_BIT_KHR,
+        };
+        queryPoolInfo.pNext = &feedbackInfo;
+        
+        VkResult result = vkCreateQueryPool(device, &queryPoolInfo, nullptr, &queryPool);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create query pool: " << result << std::endl;
+            return false;
+        }
+        
+        std::cout << "Query pool created" << std::endl;
+        return true;
+    }
+    
+    // Write NAL unit to file with start code
+    void writeNALUnit(const uint8_t* data, size_t size) {
+        if (!outputFile.is_open() || !data || size == 0) return;
+        
+        // NAL start code
+        static const uint8_t startCode[] = { 0x00, 0x00, 0x00, 0x01 };
+        outputFile.write(reinterpret_cast<const char*>(startCode), sizeof(startCode));
+        outputFile.write(reinterpret_cast<const char*>(data), size);
+    }
+    
+    // Get current frame number
+    uint64_t getFrameCount() const { return frameCounter; }
+    
+    // Check if next frame should be IDR
+    bool isNextFrameIDR() const {
+        return (frameCounter == 0) || (config.gopSize > 0 && (frameCounter % config.gopSize == 0));
+    }
+    
+    // Increment frame counter
+    void nextFrame() { 
+        frameCounter++; 
+    }
+    
+    // Accessors
+    VkVideoSessionKHR getVideoSession() const { return videoSession; }
+    VkVideoSessionParametersKHR getSessionParams() const { return sessionParams; }
+    VkBuffer getBitstreamBuffer() const { return bitstreamBuffer; }
+    VkDeviceSize getBitstreamBufferSize() const { return bitstreamBufferSize; }
+    void* getBitstreamMappedPtr() const { return bitstreamMappedPtr; }
+    VkQueryPool getQueryPool() const { return queryPool; }
+    const VkVideoProfileInfoKHR& getVideoProfile() const { return videoProfile; }
+    const VkVideoProfileListInfoKHR& getVideoProfileList() const { return videoProfileList; }
+    const VkVideoCapabilitiesKHR& getCapabilities() const { return videoCapabilities; }
+    const VkVideoEncodeCapabilitiesKHR& getEncodeCapabilities() const { return encodeCapabilities; }
+    const VkVideoEncodeH264CapabilitiesKHR& getH264Capabilities() const { return h264Capabilities; }
+    uint32_t getVideoQueueFamilyIndex() const { return videoQueueFamilyIndex; }
+    VkQueue getVideoQueue() const { return videoQueue; }
+    const EncoderConfig& getConfig() const { return config; }
+    bool isReady() const { return isInitialized && videoSession != VK_NULL_HANDLE && sessionParams != VK_NULL_HANDLE; }
+    
+    // Cleanup all resources
+    void cleanup() {
+        if (device == VK_NULL_HANDLE) return;
+        
+        vkDeviceWaitIdle(device);
+        
+        if (outputFile.is_open()) {
+            outputFile.close();
+        }
+        
+        if (queryPool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device, queryPool, nullptr);
+            queryPool = VK_NULL_HANDLE;
+        }
+        
+        // Cleanup DPB slots
+        for (auto& slot : dpbSlots) {
+            if (slot.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, slot.view, nullptr);
+                slot.view = VK_NULL_HANDLE;
+            }
+            if (slot.image != VK_NULL_HANDLE) {
+                vkDestroyImage(device, slot.image, nullptr);
+                slot.image = VK_NULL_HANDLE;
+            }
+            if (slot.memory != VK_NULL_HANDLE) {
+                vkFreeMemory(device, slot.memory, nullptr);
+                slot.memory = VK_NULL_HANDLE;
+            }
+        }
+        
+        if (bitstreamMappedPtr) {
+            vkUnmapMemory(device, bitstreamMemory);
+            bitstreamMappedPtr = nullptr;
+        }
+        
+        if (bitstreamBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, bitstreamBuffer, nullptr);
+            bitstreamBuffer = VK_NULL_HANDLE;
+        }
+        
+        if (bitstreamMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, bitstreamMemory, nullptr);
+            bitstreamMemory = VK_NULL_HANDLE;
+        }
+        
+        if (sessionParams != VK_NULL_HANDLE) {
+            vkDestroyVideoSessionParametersKHR(device, sessionParams, nullptr);
+            sessionParams = VK_NULL_HANDLE;
+        }
+        
+        if (videoSession != VK_NULL_HANDLE) {
+            vkDestroyVideoSessionKHR(device, videoSession, nullptr);
+            videoSession = VK_NULL_HANDLE;
+        }
+        
+        for (auto& mem : sessionMemory) {
+            if (mem != VK_NULL_HANDLE) {
+                vkFreeMemory(device, mem, nullptr);
+            }
+        }
+        sessionMemory.clear();
+        
+        isInitialized = false;
+    }
+
+private:
+    // Bind memory to video session (required before use)
+    bool bindVideoSessionMemory() {
+        uint32_t memReqCount = 0;
+        vkGetVideoSessionMemoryRequirementsKHR(device, videoSession, &memReqCount, nullptr);
+        
+        if (memReqCount == 0) return true;
+        
+        std::vector<VkVideoSessionMemoryRequirementsKHR> memReqs(memReqCount);
+        for (auto& req : memReqs) {
+            req.sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_MEMORY_REQUIREMENTS_KHR;
+            req.pNext = nullptr;
+        }
+        vkGetVideoSessionMemoryRequirementsKHR(device, videoSession, &memReqCount, memReqs.data());
+        
+        std::vector<VkBindVideoSessionMemoryInfoKHR> bindInfos(memReqCount);
+        sessionMemory.resize(memReqCount);
+        
+        for (uint32_t i = 0; i < memReqCount; i++) {
+            VkMemoryAllocateInfo allocInfo = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize = memReqs[i].memoryRequirements.size,
+                .memoryTypeIndex = vulkanDevice->getMemoryType(
+                    memReqs[i].memoryRequirements.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+            };
+            
+            VkResult result = vkAllocateMemory(device, &allocInfo, nullptr, &sessionMemory[i]);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to allocate video session memory: " << result << std::endl;
+                return false;
+            }
+            
+            bindInfos[i] = {
+                .sType = VK_STRUCTURE_TYPE_BIND_VIDEO_SESSION_MEMORY_INFO_KHR,
+                .pNext = nullptr,
+                .memoryBindIndex = memReqs[i].memoryBindIndex,
+                .memory = sessionMemory[i],
+                .memoryOffset = 0,
+                .memorySize = memReqs[i].memoryRequirements.size,
+            };
+        }
+        
+        VkResult result = vkBindVideoSessionMemoryKHR(device, videoSession, memReqCount, bindInfos.data());
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to bind video session memory: " << result << std::endl;
+            return false;
+        }
+        
+        std::cout << "Video session memory bound (" << memReqCount << " allocations)" << std::endl;
+        return true;
+    }
+};
+
 class VulkanExample : public VulkanExampleBase
 {
 public:
