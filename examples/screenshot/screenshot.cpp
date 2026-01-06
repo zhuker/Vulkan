@@ -31,16 +31,18 @@ public:
 
 	bool screenshotSaved{ false };
 
-	VulkanExample() : VulkanExampleBase()
+	VulkanExample() : VulkanExampleBase(), uniformBuffers{}
 	{
 		title = "Saving framebuffer to screenshot";
+		apiVersion = VK_API_VERSION_1_1;
+	    settings.validation = true;
 		camera.type = Camera::CameraType::lookat;
 		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 512.0f);
 		camera.setRotation(glm::vec3(-25.0f, 23.75f, 0.0f));
 		camera.setTranslation(glm::vec3(0.0f, 0.0f, -3.0f));
 	}
 
-	~VulkanExample()
+	~VulkanExample() override
 	{
 		if (device) {
 			vkDestroyPipeline(device, pipeline, nullptr);
@@ -56,13 +58,18 @@ public:
 	    // Check for Vulkan Video extensions
 	    bool videoQueue = vulkanDevice->extensionSupported(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
 	    bool encodeQueue = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME);
+		bool sync2 = vulkanDevice->extensionSupported(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+
 	    std::cout << "Vulkan Video Encoding Support:" << std::endl;
 	    std::cout << "  Base Video Queue: " << (videoQueue ? "Yes" : "No") << std::endl;
 	    std::cout << "  Encode Queue:     " << (encodeQueue ? "Yes" : "No") << std::endl;
+		std::cout << "  Synchronization2: " << (sync2 ? "Yes" : "No") << std::endl;
+
 	    // Check for specific encoders
-        if (videoQueue && encodeQueue) {
+        if (videoQueue && encodeQueue && sync2) {
             enabledDeviceExtensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
             enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME);
+            enabledDeviceExtensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
 
             std::cout << "  Supported Encoders:" << std::endl;
             bool h264 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
@@ -258,8 +265,8 @@ public:
 		{
 			// Define the region to blit (we will blit the whole swapchain image)
 			VkOffset3D blitSize;
-			blitSize.x = width;
-			blitSize.y = height;
+			blitSize.x = static_cast<int32_t>(width);
+			blitSize.y = static_cast<int32_t>(height);
 			blitSize.z = 1;
 			VkImageBlit imageBlitRegion{};
 			imageBlitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -353,7 +360,7 @@ public:
 		// ppm binary pixel data
 		for (uint32_t y = 0; y < height; y++)
 		{
-			unsigned int *row = (unsigned int*)data;
+			auto *row = (unsigned int*)data;
 			for (uint32_t x = 0; x < width; x++)
 			{
 				if (colorSwizzle)
@@ -382,7 +389,7 @@ public:
 		screenshotSaved = true;
 	}
 
-	void prepare()
+	void prepare() override
 	{
 		VulkanExampleBase::prepare();
 		loadAssets();
@@ -416,7 +423,7 @@ public:
 		vkCmdBeginRenderPass(cmdBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 		VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
 		vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
-		VkRect2D scissor = vks::initializers::rect2D(width, height, 0, 0);
+		VkRect2D scissor = vks::initializers::rect2D(static_cast<int32_t>(width), static_cast<int32_t>(height), 0, 0);
 		vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 		vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentBuffer], 0, nullptr);
 		vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -426,7 +433,7 @@ public:
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
-	virtual void render()
+	void render() override
 	{
 		if (!prepared)
 			return;
@@ -436,7 +443,7 @@ public:
 		VulkanExampleBase::submitFrame();
 	}
 
-	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
+	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
 	{
 		if (overlay->header("Functions")) {
 			if (overlay->button("Take screenshot")) {
