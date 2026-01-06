@@ -216,6 +216,8 @@ public:
 	std::string name = "vulkanExample";
 	uint32_t apiVersion = VK_API_VERSION_1_0;
 
+	VkQueueFlags requestedQueueTypes = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+
 	/** @brief Default depth stencil attachment used by the default render pass */
 	struct {
 		VkImage image;

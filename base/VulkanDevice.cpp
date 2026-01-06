@@ -248,6 +248,51 @@ namespace vks
 			queueFamilyIndices.transfer = queueFamilyIndices.graphics;
 		}
 
+		// Dedicated video decode queue
+		if (requestedQueueTypes & VK_QUEUE_VIDEO_DECODE_BIT_KHR)
+		{
+			queueFamilyIndices.videoDecode = getQueueFamilyIndex(VK_QUEUE_VIDEO_DECODE_BIT_KHR);
+			if ((queueFamilyIndices.videoDecode != queueFamilyIndices.graphics) &&
+				(queueFamilyIndices.videoDecode != queueFamilyIndices.compute) &&
+				(queueFamilyIndices.videoDecode != queueFamilyIndices.transfer))
+			{
+				VkDeviceQueueCreateInfo queueInfo{
+					.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+					.queueFamilyIndex = queueFamilyIndices.videoDecode,
+					.queueCount = 1,
+					.pQueuePriorities = &defaultQueuePriority
+				};
+				queueCreateInfos.push_back(queueInfo);
+			}
+		}
+		else
+		{
+			queueFamilyIndices.videoDecode = queueFamilyIndices.graphics;
+		}
+
+		// Dedicated video encode queue
+		if (requestedQueueTypes & VK_QUEUE_VIDEO_ENCODE_BIT_KHR)
+		{
+			queueFamilyIndices.videoEncode = getQueueFamilyIndex(VK_QUEUE_VIDEO_ENCODE_BIT_KHR);
+			if ((queueFamilyIndices.videoEncode != queueFamilyIndices.graphics) &&
+				(queueFamilyIndices.videoEncode != queueFamilyIndices.compute) &&
+				(queueFamilyIndices.videoEncode != queueFamilyIndices.transfer) &&
+				(queueFamilyIndices.videoEncode != queueFamilyIndices.videoDecode))
+			{
+				VkDeviceQueueCreateInfo queueInfo{
+					.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+					.queueFamilyIndex = queueFamilyIndices.videoEncode,
+					.queueCount = 1,
+					.pQueuePriorities = &defaultQueuePriority
+				};
+				queueCreateInfos.push_back(queueInfo);
+			}
+		}
+		else
+		{
+			queueFamilyIndices.videoEncode = queueFamilyIndices.graphics;
+		}
+
 		// Create the logical device representation
 		std::vector<const char*> deviceExtensions(enabledExtensions);
 		if (useSwapChain)

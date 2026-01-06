@@ -1080,7 +1080,7 @@ bool VulkanExampleBase::initVulkan()
 	// Derived examples can enable extensions based on the list of supported extensions read from the physical device
 	getEnabledExtensions();
 
-	result = vulkanDevice->createLogicalDevice(enabledFeatures, enabledDeviceExtensions, deviceCreatepNextChain);
+	result = vulkanDevice->createLogicalDevice(enabledFeatures, enabledDeviceExtensions, deviceCreatepNextChain, true, requestedQueueTypes);
 	if (result != VK_SUCCESS) {
 		vks::tools::exitFatal("Could not create Vulkan device: \n" + vks::tools::errorString(result), result);
 		return false;

@@ -45,6 +45,8 @@ struct VulkanDevice
 		uint32_t graphics;
 		uint32_t compute;
 		uint32_t transfer;
+		uint32_t videoDecode;
+		uint32_t videoEncode;
 	} queueFamilyIndices;
 	operator VkDevice() const
 	{
