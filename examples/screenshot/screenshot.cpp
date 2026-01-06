@@ -39,6 +39,7 @@ private:
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkSampler inputSampler = VK_NULL_HANDLE;  // Sampler for reading swapchain images
     
     // Per-swapchain-image descriptor sets and NV12 images
     std::vector<VkDescriptorSet> descriptorSets;
@@ -56,6 +57,8 @@ private:
     // Push constant for shader
     struct PushConstants {
         int32_t swizzle;
+        int32_t width;
+        int32_t height;
     };
 
 public:
@@ -113,13 +116,13 @@ public:
 
         NV12Image& nv12 = nv12Images[imageIndex];
 
-        // Transition source (swapchain) image to GENERAL for compute read
+        // Transition source (swapchain) image to SHADER_READ_ONLY_OPTIMAL for sampled read
         VkImageMemoryBarrier srcBarrier = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = srcImage,
@@ -163,8 +166,8 @@ public:
         vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, 
             pipelineLayout, 0, 1, &descriptorSets[imageIndex], 0, nullptr);
 
-        // Push swizzle constant
-        PushConstants pushConstants = { needsSwizzle ? 1 : 0 };
+        // Push constants including dimensions for sampled image
+        PushConstants pushConstants = { needsSwizzle ? 1 : 0, static_cast<int32_t>(width), static_cast<int32_t>(height) };
         vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 
             0, sizeof(PushConstants), &pushConstants);
 
@@ -209,7 +212,7 @@ public:
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
             .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -293,6 +296,12 @@ public:
         if (pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             pipelineLayout = VK_NULL_HANDLE;
+        }
+
+        // Destroy sampler
+        if (inputSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(device, inputSampler, nullptr);
+            inputSampler = VK_NULL_HANDLE;
         }
 
         isInitialized = false;
@@ -452,11 +461,35 @@ private:
 
     // Create compute pipeline for RGB to NV12 conversion
     bool createComputePipeline(const std::string& shaderPath) {
-        // Descriptor set layout: binding 0 = input image, binding 1 = Y output, binding 2 = UV output
+        // Create sampler for reading swapchain images
+        VkSamplerCreateInfo samplerInfo = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_NEAREST,
+            .minFilter = VK_FILTER_NEAREST,
+            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .mipLodBias = 0.0f,
+            .anisotropyEnable = VK_FALSE,
+            .compareEnable = VK_FALSE,
+            .minLod = 0.0f,
+            .maxLod = 0.0f,
+            .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK,
+            .unnormalizedCoordinates = VK_FALSE,
+        };
+
+        VkResult result = vkCreateSampler(device, &samplerInfo, nullptr, &inputSampler);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create input sampler" << std::endl;
+            return false;
+        }
+
+        // Descriptor set layout: binding 0 = input sampled image, binding 1 = Y output, binding 2 = UV output
         std::array<VkDescriptorSetLayoutBinding, 3> bindings = {{
             {
                 .binding = 0,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
             },
@@ -480,7 +513,7 @@ private:
             .pBindings = bindings.data(),
         };
 
-        VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
+        result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
         if (result != VK_SUCCESS) {
             std::cerr << "Failed to create descriptor set layout" << std::endl;
             return false;
@@ -563,17 +596,23 @@ private:
 
     // Create descriptor pool and sets
     bool createDescriptorSets(uint32_t count) {
-        // Descriptor pool
-        VkDescriptorPoolSize poolSize = {
-            .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .descriptorCount = count * 3,  // 3 images per set
-        };
+        // Descriptor pool - need both sampler and storage image types
+        std::array<VkDescriptorPoolSize, 2> poolSizes = {{
+            {
+                .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = count,  // 1 sampled image per set
+            },
+            {
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = count * 2,  // 2 storage images per set (Y and UV)
+            }
+        }};
 
         VkDescriptorPoolCreateInfo poolInfo = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .maxSets = count,
-            .poolSizeCount = 1,
-            .pPoolSizes = &poolSize,
+            .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
+            .pPoolSizes = poolSizes.data(),
         };
 
         VkResult result = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
@@ -602,8 +641,9 @@ private:
         // Update descriptor sets
         for (uint32_t i = 0; i < count; i++) {
             VkDescriptorImageInfo inputImageInfo = {
+                .sampler = inputSampler,
                 .imageView = swapchainImageViews[i],
-                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
 
             VkDescriptorImageInfo yImageInfo = {
@@ -622,7 +662,7 @@ private:
                     .dstSet = descriptorSets[i],
                     .dstBinding = 0,
                     .descriptorCount = 1,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     .pImageInfo = &inputImageInfo,
                 },
                 {
