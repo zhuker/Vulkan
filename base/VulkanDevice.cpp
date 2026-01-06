@@ -8,10 +8,7 @@
  * This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
  */
 
-#if (defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT))
-// SRS - Enable beta extensions and make VK_KHR_portability_subset visible
 #define VK_ENABLE_BETA_EXTENSIONS
-#endif
 #include <VulkanDevice.h>
 #include <unordered_set>
 
@@ -273,20 +270,22 @@ namespace vks
 		// Dedicated video encode queue
 		if (requestedQueueTypes & VK_QUEUE_VIDEO_ENCODE_BIT_KHR)
 		{
-			queueFamilyIndices.videoEncode = getQueueFamilyIndex(VK_QUEUE_VIDEO_ENCODE_BIT_KHR);
-			if ((queueFamilyIndices.videoEncode != queueFamilyIndices.graphics) &&
-				(queueFamilyIndices.videoEncode != queueFamilyIndices.compute) &&
-				(queueFamilyIndices.videoEncode != queueFamilyIndices.transfer) &&
-				(queueFamilyIndices.videoEncode != queueFamilyIndices.videoDecode))
-			{
-				VkDeviceQueueCreateInfo queueInfo{
-					.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-					.queueFamilyIndex = queueFamilyIndices.videoEncode,
-					.queueCount = 1,
-					.pQueuePriorities = &defaultQueuePriority
-				};
-				queueCreateInfos.push_back(queueInfo);
-			}
+            if (queueFamilyProperties.size() > 0)
+            {
+                queueFamilyIndices.videoEncode = getQueueFamilyIndex(VK_QUEUE_VIDEO_ENCODE_BIT_KHR);
+                if ((queueFamilyIndices.videoEncode != queueFamilyIndices.graphics) &&
+                    (queueFamilyIndices.videoEncode != queueFamilyIndices.compute) &&
+                    (queueFamilyIndices.videoEncode != queueFamilyIndices.transfer))
+                {
+                    VkDeviceQueueCreateInfo queueInfo{
+                        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                        .queueFamilyIndex = queueFamilyIndices.videoEncode,
+                        .queueCount = 1,
+                        .pQueuePriorities = &defaultQueuePriority
+                    };
+                    queueCreateInfos.push_back(queueInfo);
+                }
+            }
 		}
 		else
 		{
