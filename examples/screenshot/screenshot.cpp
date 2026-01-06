@@ -10,6 +10,588 @@
 
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
+#include <fstream>
+
+// RGB to NV12 Color Conversion Pipeline
+// Uses a compute shader to convert RGB swapchain images to NV12 format for video encoding
+class RGBtoNV12Converter {
+public:
+    struct NV12Image {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView viewY = VK_NULL_HANDLE;      // Y plane view (full resolution)
+        VkImageView viewUV = VK_NULL_HANDLE;     // UV plane view (half resolution)
+        VkImageView viewFull = VK_NULL_HANDLE;   // Full image view for video encode
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+
+private:
+    // Device references (not owned)
+    VkDevice device = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    vks::VulkanDevice* vulkanDevice = nullptr;
+
+    // Compute pipeline resources
+    VkPipeline computePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    
+    // Per-swapchain-image descriptor sets and NV12 images
+    std::vector<VkDescriptorSet> descriptorSets;
+    std::vector<NV12Image> nv12Images;
+    
+    // Swapchain image views for binding
+    std::vector<VkImageView> swapchainImageViews;
+
+    // Configuration
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool needsSwizzle = false;  // BGR to RGB swizzle flag
+    bool isInitialized = false;
+
+    // Push constant for shader
+    struct PushConstants {
+        int32_t swizzle;
+    };
+
+public:
+    RGBtoNV12Converter() = default;
+
+    ~RGBtoNV12Converter() {
+        cleanup();
+    }
+
+    // Initialize the converter
+    bool initialize(vks::VulkanDevice* vulkanDevice, uint32_t width, uint32_t height, 
+                   VkFormat swapchainFormat, const std::vector<VkImage>& swapchainImages,
+                   const std::string& shaderPath) {
+        this->vulkanDevice = vulkanDevice;
+        this->device = vulkanDevice->logicalDevice;
+        this->physicalDevice = vulkanDevice->physicalDevice;
+        this->width = width;
+        this->height = height;
+
+        // Check if swapchain format is BGR and needs swizzle
+        std::vector<VkFormat> formatsBGR = { 
+            VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SNORM 
+        };
+        needsSwizzle = (std::find(formatsBGR.begin(), formatsBGR.end(), swapchainFormat) != formatsBGR.end());
+
+        // Create swapchain image views for compute shader input
+        if (!createSwapchainImageViews(swapchainImages, swapchainFormat)) {
+            return false;
+        }
+
+        // Create NV12 output images (one per swapchain image)
+        if (!createNV12Images(static_cast<uint32_t>(swapchainImages.size()))) {
+            return false;
+        }
+
+        // Create compute pipeline
+        if (!createComputePipeline(shaderPath)) {
+            return false;
+        }
+
+        // Create descriptor pool and sets
+        if (!createDescriptorSets(static_cast<uint32_t>(swapchainImages.size()))) {
+            return false;
+        }
+
+        isInitialized = true;
+        std::cout << "RGB to NV12 converter initialized (" << width << "x" << height 
+                  << ", swizzle=" << (needsSwizzle ? "yes" : "no") << ")" << std::endl;
+        return true;
+    }
+
+    // Record compute dispatch commands for color conversion
+    void recordCommands(VkCommandBuffer cmdBuffer, uint32_t imageIndex, VkImage srcImage) {
+        if (!isInitialized || imageIndex >= nv12Images.size()) return;
+
+        NV12Image& nv12 = nv12Images[imageIndex];
+
+        // Transition source (swapchain) image to GENERAL for compute read
+        VkImageMemoryBarrier srcBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = srcImage,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+        };
+
+        // Transition NV12 image to GENERAL for compute write
+        VkImageMemoryBarrier dstBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = nv12.image,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+        };
+
+        VkImageMemoryBarrier barriers[] = { srcBarrier, dstBarrier };
+        vkCmdPipelineBarrier(cmdBuffer,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 2, barriers);
+
+        // Bind compute pipeline and descriptor set
+        vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+        vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, 
+            pipelineLayout, 0, 1, &descriptorSets[imageIndex], 0, nullptr);
+
+        // Push swizzle constant
+        PushConstants pushConstants = { needsSwizzle ? 1 : 0 };
+        vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 
+            0, sizeof(PushConstants), &pushConstants);
+
+        // Dispatch compute shader (16x16 workgroups)
+        uint32_t groupCountX = (width + 15) / 16;
+        uint32_t groupCountY = (height + 15) / 16;
+        vkCmdDispatch(cmdBuffer, groupCountX, groupCountY, 1);
+
+        // Barrier: compute write -> video encode read
+        VkImageMemoryBarrier postBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = nv12.image,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+        };
+
+        vkCmdPipelineBarrier(cmdBuffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &postBarrier);
+
+        // Transition swapchain image back to present
+        VkImageMemoryBarrier srcPostBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = srcImage,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+        };
+
+        vkCmdPipelineBarrier(cmdBuffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &srcPostBarrier);
+    }
+
+    // Get NV12 image for a given swapchain index
+    const NV12Image& getNV12Image(uint32_t index) const {
+        return nv12Images[index];
+    }
+
+    // Get the number of NV12 images
+    uint32_t getImageCount() const {
+        return static_cast<uint32_t>(nv12Images.size());
+    }
+
+    bool isReady() const { return isInitialized; }
+
+    // Cleanup all resources
+    void cleanup() {
+        if (device == VK_NULL_HANDLE) return;
+
+        vkDeviceWaitIdle(device);
+
+        // Destroy NV12 images
+        for (auto& img : nv12Images) {
+            if (img.viewFull != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, img.viewFull, nullptr);
+            }
+            if (img.viewUV != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, img.viewUV, nullptr);
+            }
+            if (img.viewY != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, img.viewY, nullptr);
+            }
+            if (img.image != VK_NULL_HANDLE) {
+                vkDestroyImage(device, img.image, nullptr);
+            }
+            if (img.memory != VK_NULL_HANDLE) {
+                vkFreeMemory(device, img.memory, nullptr);
+            }
+        }
+        nv12Images.clear();
+
+        // Destroy swapchain image views
+        for (auto& view : swapchainImageViews) {
+            if (view != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, view, nullptr);
+            }
+        }
+        swapchainImageViews.clear();
+
+        // Destroy descriptor resources
+        if (descriptorPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            descriptorPool = VK_NULL_HANDLE;
+        }
+        descriptorSets.clear();
+
+        if (descriptorSetLayout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+            descriptorSetLayout = VK_NULL_HANDLE;
+        }
+
+        // Destroy pipeline
+        if (computePipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, computePipeline, nullptr);
+            computePipeline = VK_NULL_HANDLE;
+        }
+
+        if (pipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+            pipelineLayout = VK_NULL_HANDLE;
+        }
+
+        isInitialized = false;
+    }
+
+private:
+    // Create image views for swapchain images (for compute shader input)
+    bool createSwapchainImageViews(const std::vector<VkImage>& swapchainImages, VkFormat format) {
+        swapchainImageViews.resize(swapchainImages.size());
+
+        for (size_t i = 0; i < swapchainImages.size(); i++) {
+            VkImageViewCreateInfo viewInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = swapchainImages[i],
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = format,
+                .components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                               VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY },
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+            };
+
+            VkResult result = vkCreateImageView(device, &viewInfo, nullptr, &swapchainImageViews[i]);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create swapchain image view " << i << std::endl;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Create NV12 format images for color-converted output
+    bool createNV12Images(uint32_t count) {
+        nv12Images.resize(count);
+
+        for (uint32_t i = 0; i < count; i++) {
+            NV12Image& img = nv12Images[i];
+            img.width = width;
+            img.height = height;
+
+            // Create NV12 image (2-plane YUV 4:2:0)
+            VkImageCreateInfo imageInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+                .extent = { width, height, 1 },
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+
+            VkResult result = vkCreateImage(device, &imageInfo, nullptr, &img.image);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create NV12 image " << i << ": " << result << std::endl;
+                return false;
+            }
+
+            // Allocate memory
+            VkMemoryRequirements memReqs;
+            vkGetImageMemoryRequirements(device, img.image, &memReqs);
+
+            VkMemoryAllocateInfo allocInfo = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize = memReqs.size,
+                .memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, 
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+            };
+
+            result = vkAllocateMemory(device, &allocInfo, nullptr, &img.memory);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to allocate NV12 image memory " << i << std::endl;
+                return false;
+            }
+
+            vkBindImageMemory(device, img.image, img.memory, 0);
+
+            // Create Y plane view (plane 0)
+            VkImageViewCreateInfo yViewInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = img.image,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = VK_FORMAT_R8_UNORM,
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+            };
+
+            result = vkCreateImageView(device, &yViewInfo, nullptr, &img.viewY);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create Y plane view " << i << std::endl;
+                return false;
+            }
+
+            // Create UV plane view (plane 1) - half resolution
+            VkImageViewCreateInfo uvViewInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = img.image,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = VK_FORMAT_R8G8_UNORM,
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
+            };
+
+            result = vkCreateImageView(device, &uvViewInfo, nullptr, &img.viewUV);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create UV plane view " << i << std::endl;
+                return false;
+            }
+
+            // Create full image view for video encode (color aspect)
+            VkImageViewCreateInfo fullViewInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = img.image,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+            };
+
+            result = vkCreateImageView(device, &fullViewInfo, nullptr, &img.viewFull);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create full NV12 view " << i << std::endl;
+                return false;
+            }
+        }
+
+        std::cout << "Created " << count << " NV12 images (" << width << "x" << height << ")" << std::endl;
+        return true;
+    }
+
+    // Create compute pipeline for RGB to NV12 conversion
+    bool createComputePipeline(const std::string& shaderPath) {
+        // Descriptor set layout: binding 0 = input image, binding 1 = Y output, binding 2 = UV output
+        std::array<VkDescriptorSetLayoutBinding, 3> bindings = {{
+            {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            {
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            }
+        }};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .pBindings = bindings.data(),
+        };
+
+        VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create descriptor set layout" << std::endl;
+            return false;
+        }
+
+        // Push constant range for swizzle flag
+        VkPushConstantRange pushConstantRange = {
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(PushConstants),
+        };
+
+        // Pipeline layout
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &descriptorSetLayout,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &pushConstantRange,
+        };
+
+        result = vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create pipeline layout" << std::endl;
+            return false;
+        }
+
+        // Load compute shader
+        std::string shaderFile = shaderPath + "screenshot/rgb_to_nv12.comp.spv";
+        std::ifstream file(shaderFile, std::ios::ate | std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open shader file: " << shaderFile << std::endl;
+            return false;
+        }
+
+        size_t fileSize = static_cast<size_t>(file.tellg());
+        std::vector<char> shaderCode(fileSize);
+        file.seekg(0);
+        file.read(shaderCode.data(), fileSize);
+        file.close();
+
+        VkShaderModuleCreateInfo shaderModuleInfo = {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = shaderCode.size(),
+            .pCode = reinterpret_cast<const uint32_t*>(shaderCode.data()),
+        };
+
+        VkShaderModule shaderModule;
+        result = vkCreateShaderModule(device, &shaderModuleInfo, nullptr, &shaderModule);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create shader module" << std::endl;
+            return false;
+        }
+
+        // Compute pipeline
+        VkPipelineShaderStageCreateInfo shaderStage = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = shaderModule,
+            .pName = "main",
+        };
+
+        VkComputePipelineCreateInfo pipelineInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = shaderStage,
+            .layout = pipelineLayout,
+        };
+
+        result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline);
+        vkDestroyShaderModule(device, shaderModule, nullptr);
+
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create compute pipeline" << std::endl;
+            return false;
+        }
+
+        std::cout << "RGB to NV12 compute pipeline created" << std::endl;
+        return true;
+    }
+
+    // Create descriptor pool and sets
+    bool createDescriptorSets(uint32_t count) {
+        // Descriptor pool
+        VkDescriptorPoolSize poolSize = {
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .descriptorCount = count * 3,  // 3 images per set
+        };
+
+        VkDescriptorPoolCreateInfo poolInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = count,
+            .poolSizeCount = 1,
+            .pPoolSizes = &poolSize,
+        };
+
+        VkResult result = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create descriptor pool" << std::endl;
+            return false;
+        }
+
+        // Allocate descriptor sets
+        descriptorSets.resize(count);
+        std::vector<VkDescriptorSetLayout> layouts(count, descriptorSetLayout);
+
+        VkDescriptorSetAllocateInfo allocInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = descriptorPool,
+            .descriptorSetCount = count,
+            .pSetLayouts = layouts.data(),
+        };
+
+        result = vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data());
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to allocate descriptor sets" << std::endl;
+            return false;
+        }
+
+        // Update descriptor sets
+        for (uint32_t i = 0; i < count; i++) {
+            VkDescriptorImageInfo inputImageInfo = {
+                .imageView = swapchainImageViews[i],
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            VkDescriptorImageInfo yImageInfo = {
+                .imageView = nv12Images[i].viewY,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            VkDescriptorImageInfo uvImageInfo = {
+                .imageView = nv12Images[i].viewUV,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            std::array<VkWriteDescriptorSet, 3> writes = {{
+                {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = descriptorSets[i],
+                    .dstBinding = 0,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .pImageInfo = &inputImageInfo,
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = descriptorSets[i],
+                    .dstBinding = 1,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .pImageInfo = &yImageInfo,
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = descriptorSets[i],
+                    .dstBinding = 2,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .pImageInfo = &uvImageInfo,
+                }
+            }};
+
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
+
+        std::cout << "Created " << count << " descriptor sets for RGB to NV12 conversion" << std::endl;
+        return true;
+    }
+};
 
 // H264 Encoder Infrastructure Class
 // Manages Vulkan Video encoding resources for H.264 output
@@ -48,6 +630,15 @@ private:
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     vks::VulkanDevice* vulkanDevice = nullptr;
+
+    // Function pointers for Vulkan Video extension
+    PFN_vkCreateVideoSessionKHR fp_vkCreateVideoSessionKHR = nullptr;
+    PFN_vkDestroyVideoSessionKHR fp_vkDestroyVideoSessionKHR = nullptr;
+    PFN_vkGetVideoSessionMemoryRequirementsKHR fp_vkGetVideoSessionMemoryRequirementsKHR = nullptr;
+    PFN_vkBindVideoSessionMemoryKHR fp_vkBindVideoSessionMemoryKHR = nullptr;
+    PFN_vkCreateVideoSessionParametersKHR fp_vkCreateVideoSessionParametersKHR = nullptr;
+    PFN_vkDestroyVideoSessionParametersKHR fp_vkDestroyVideoSessionParametersKHR = nullptr;
+    PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR fp_vkGetPhysicalDeviceVideoCapabilitiesKHR = nullptr;
     
     // Video session resources
     VkVideoSessionKHR videoSession = VK_NULL_HANDLE;
@@ -107,11 +698,28 @@ public:
     }
     
     // Initialize the encoder
-    bool initialize(vks::VulkanDevice* vulkanDevice, const EncoderConfig& cfg) {
+    bool initialize(vks::VulkanDevice* vulkanDevice, VkInstance instance, const EncoderConfig& cfg) {
         this->vulkanDevice = vulkanDevice;
         this->device = vulkanDevice->logicalDevice;
         this->physicalDevice = vulkanDevice->physicalDevice;
         this->config = cfg;
+
+        // Load function pointers
+        fp_vkCreateVideoSessionKHR = reinterpret_cast<PFN_vkCreateVideoSessionKHR>(vkGetDeviceProcAddr(device, "vkCreateVideoSessionKHR"));
+        fp_vkDestroyVideoSessionKHR = reinterpret_cast<PFN_vkDestroyVideoSessionKHR>(vkGetDeviceProcAddr(device, "vkDestroyVideoSessionKHR"));
+        fp_vkGetVideoSessionMemoryRequirementsKHR = reinterpret_cast<PFN_vkGetVideoSessionMemoryRequirementsKHR>(vkGetDeviceProcAddr(device, "vkGetVideoSessionMemoryRequirementsKHR"));
+        fp_vkBindVideoSessionMemoryKHR = reinterpret_cast<PFN_vkBindVideoSessionMemoryKHR>(vkGetDeviceProcAddr(device, "vkBindVideoSessionMemoryKHR"));
+        fp_vkCreateVideoSessionParametersKHR = reinterpret_cast<PFN_vkCreateVideoSessionParametersKHR>(vkGetDeviceProcAddr(device, "vkCreateVideoSessionParametersKHR"));
+        fp_vkDestroyVideoSessionParametersKHR = reinterpret_cast<PFN_vkDestroyVideoSessionParametersKHR>(vkGetDeviceProcAddr(device, "vkDestroyVideoSessionParametersKHR"));
+        
+        fp_vkGetPhysicalDeviceVideoCapabilitiesKHR = reinterpret_cast<PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR>(vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR"));
+
+        if (!fp_vkCreateVideoSessionKHR || !fp_vkDestroyVideoSessionKHR || !fp_vkGetVideoSessionMemoryRequirementsKHR ||
+            !fp_vkBindVideoSessionMemoryKHR || !fp_vkCreateVideoSessionParametersKHR || !fp_vkDestroyVideoSessionParametersKHR ||
+            !fp_vkGetPhysicalDeviceVideoCapabilitiesKHR) {
+            std::cerr << "Failed to load Vulkan Video extension functions" << std::endl;
+            return false;
+        }
         
         // Open output file
         outputFile.open(config.outputPath, std::ios::binary | std::ios::trunc);
@@ -174,7 +782,7 @@ public:
             .pNext = &encodeCapabilities,
         };
         
-        VkResult result = vkGetPhysicalDeviceVideoCapabilitiesKHR(
+        VkResult result = fp_vkGetPhysicalDeviceVideoCapabilitiesKHR(
             physicalDevice, &videoProfile, &videoCapabilities);
         
         if (result != VK_SUCCESS) {
@@ -234,7 +842,7 @@ public:
             .pStdHeaderVersion = &videoCapabilities.stdHeaderVersion,
         };
         
-        VkResult result = vkCreateVideoSessionKHR(device, &sessionCreateInfo, nullptr, &videoSession);
+        VkResult result = fp_vkCreateVideoSessionKHR(device, &sessionCreateInfo, nullptr, &videoSession);
         if (result != VK_SUCCESS) {
             std::cerr << "Failed to create video session: " << result << std::endl;
             return false;
@@ -320,7 +928,7 @@ public:
             .videoSession = videoSession,
         };
         
-        VkResult result = vkCreateVideoSessionParametersKHR(device, &paramsCreateInfo, nullptr, &sessionParams);
+        VkResult result = fp_vkCreateVideoSessionParametersKHR(device, &paramsCreateInfo, nullptr, &sessionParams);
         if (result != VK_SUCCESS) {
             std::cerr << "Failed to create session parameters: " << result << std::endl;
             return false;
@@ -492,12 +1100,12 @@ public:
         }
         
         if (sessionParams != VK_NULL_HANDLE) {
-            vkDestroyVideoSessionParametersKHR(device, sessionParams, nullptr);
+            fp_vkDestroyVideoSessionParametersKHR(device, sessionParams, nullptr);
             sessionParams = VK_NULL_HANDLE;
         }
         
         if (videoSession != VK_NULL_HANDLE) {
-            vkDestroyVideoSessionKHR(device, videoSession, nullptr);
+            fp_vkDestroyVideoSessionKHR(device, videoSession, nullptr);
             videoSession = VK_NULL_HANDLE;
         }
         
@@ -515,7 +1123,7 @@ private:
     // Bind memory to video session (required before use)
     bool bindVideoSessionMemory() {
         uint32_t memReqCount = 0;
-        vkGetVideoSessionMemoryRequirementsKHR(device, videoSession, &memReqCount, nullptr);
+        fp_vkGetVideoSessionMemoryRequirementsKHR(device, videoSession, &memReqCount, nullptr);
         
         if (memReqCount == 0) return true;
         
@@ -524,7 +1132,7 @@ private:
             req.sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_MEMORY_REQUIREMENTS_KHR;
             req.pNext = nullptr;
         }
-        vkGetVideoSessionMemoryRequirementsKHR(device, videoSession, &memReqCount, memReqs.data());
+        fp_vkGetVideoSessionMemoryRequirementsKHR(device, videoSession, &memReqCount, memReqs.data());
         
         std::vector<VkBindVideoSessionMemoryInfoKHR> bindInfos(memReqCount);
         sessionMemory.resize(memReqCount);
@@ -554,7 +1162,7 @@ private:
             };
         }
         
-        VkResult result = vkBindVideoSessionMemoryKHR(device, videoSession, memReqCount, bindInfos.data());
+        VkResult result = fp_vkBindVideoSessionMemoryKHR(device, videoSession, memReqCount, bindInfos.data());
         if (result != VK_SUCCESS) {
             std::cerr << "Failed to bind video session memory: " << result << std::endl;
             return false;
@@ -584,6 +1192,10 @@ public:
 	std::array<VkDescriptorSet, maxConcurrentFrames> descriptorSets{};
 
 	bool screenshotSaved{ false };
+
+	// Video encoding resources
+	RGBtoNV12Converter rgbToNv12Converter;
+	VulkanH264Encoder h264Encoder;
 
 	VulkanExample() : VulkanExampleBase(), uniformBuffers{}
 	{
@@ -950,7 +1562,46 @@ public:
 		prepareUniformBuffers();
 		setupDescriptors();
 		preparePipelines();
+		prepareVideoEncoding();
 		prepared = true;
+	}
+
+	// Initialize video encoding pipeline (RGB to NV12 converter + H264 encoder)
+	void prepareVideoEncoding()
+	{
+		// Check if video encoding is supported
+		if (!vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME)) {
+			std::cout << "H.264 video encoding not supported, skipping encoder setup" << std::endl;
+			return;
+		}
+
+		// Initialize RGB to NV12 converter
+		std::vector<VkImage> swapchainImages;
+		for (uint32_t i = 0; i < swapChain.imageCount; i++) {
+			swapchainImages.push_back(swapChain.images[i]);
+		}
+
+		if (!rgbToNv12Converter.initialize(vulkanDevice, width, height, 
+				swapChain.colorFormat, swapchainImages, getShadersPath())) {
+			std::cerr << "Failed to initialize RGB to NV12 converter" << std::endl;
+			return;
+		}
+
+		// Initialize H264 encoder
+		VulkanH264Encoder::EncoderConfig encoderConfig;
+		encoderConfig.width = width;
+		encoderConfig.height = height;
+		encoderConfig.frameRate = 60;
+		encoderConfig.gopSize = 1;  // All I-frames
+		encoderConfig.qp = 23;
+		encoderConfig.outputPath = "recording.h264";
+
+		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
+			std::cerr << "Failed to initialize H264 encoder" << std::endl;
+			return;
+		}
+
+		std::cout << "Video encoding pipeline initialized successfully" << std::endl;
 	}
 
 	void buildCommandBuffer()
