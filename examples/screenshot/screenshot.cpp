@@ -17,11 +17,13 @@
 class RGBtoNV12Converter {
 public:
     struct NV12Image {
-        VkImage image = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
+        // Separate single-plane images for compute shader storage (multi-planar formats don't support STORAGE_BIT)
+        VkImage imageY = VK_NULL_HANDLE;         // Y plane image (R8_UNORM, full resolution)
+        VkImage imageUV = VK_NULL_HANDLE;        // UV plane image (R8G8_UNORM, half resolution)
+        VkDeviceMemory memoryY = VK_NULL_HANDLE;
+        VkDeviceMemory memoryUV = VK_NULL_HANDLE;
         VkImageView viewY = VK_NULL_HANDLE;      // Y plane view (full resolution)
         VkImageView viewUV = VK_NULL_HANDLE;     // UV plane view (half resolution)
-        VkImageView viewFull = VK_NULL_HANDLE;   // Full image view for video encode
         uint32_t width = 0;
         uint32_t height = 0;
     };
@@ -124,8 +126,8 @@ public:
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
         };
 
-        // Transition NV12 image to GENERAL for compute write
-        VkImageMemoryBarrier dstBarrier = {
+        // Transition Y plane image to GENERAL for compute write
+        VkImageMemoryBarrier yBarrier = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask = 0,
             .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
@@ -133,15 +135,28 @@ public:
             .newLayout = VK_IMAGE_LAYOUT_GENERAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = nv12.image,
+            .image = nv12.imageY,
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
         };
 
-        VkImageMemoryBarrier barriers[] = { srcBarrier, dstBarrier };
+        // Transition UV plane image to GENERAL for compute write
+        VkImageMemoryBarrier uvBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = nv12.imageUV,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+        };
+
+        VkImageMemoryBarrier barriers[] = { srcBarrier, yBarrier, uvBarrier };
         vkCmdPipelineBarrier(cmdBuffer,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 2, barriers);
+            0, 0, nullptr, 0, nullptr, 3, barriers);
 
         // Bind compute pipeline and descriptor set
         vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
@@ -158,23 +173,36 @@ public:
         uint32_t groupCountY = (height + 15) / 16;
         vkCmdDispatch(cmdBuffer, groupCountX, groupCountY, 1);
 
-        // Barrier: compute write -> video encode read
-        VkImageMemoryBarrier postBarrier = {
+        // Barrier: compute write -> transfer/read
+        VkImageMemoryBarrier yPostBarrier = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = nv12.image,
+            .image = nv12.imageY,
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
         };
 
+        VkImageMemoryBarrier uvPostBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = nv12.imageUV,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+        };
+
+        VkImageMemoryBarrier postBarriers[] = { yPostBarrier, uvPostBarrier };
         vkCmdPipelineBarrier(cmdBuffer,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &postBarrier);
+            0, 0, nullptr, 0, nullptr, 2, postBarriers);
 
         // Transition swapchain image back to present
         VkImageMemoryBarrier srcPostBarrier = {
@@ -213,22 +241,25 @@ public:
 
         vkDeviceWaitIdle(device);
 
-        // Destroy NV12 images
+        // Destroy NV12 images (separate Y and UV planes)
         for (auto& img : nv12Images) {
-            if (img.viewFull != VK_NULL_HANDLE) {
-                vkDestroyImageView(device, img.viewFull, nullptr);
-            }
             if (img.viewUV != VK_NULL_HANDLE) {
                 vkDestroyImageView(device, img.viewUV, nullptr);
             }
             if (img.viewY != VK_NULL_HANDLE) {
                 vkDestroyImageView(device, img.viewY, nullptr);
             }
-            if (img.image != VK_NULL_HANDLE) {
-                vkDestroyImage(device, img.image, nullptr);
+            if (img.imageUV != VK_NULL_HANDLE) {
+                vkDestroyImage(device, img.imageUV, nullptr);
             }
-            if (img.memory != VK_NULL_HANDLE) {
-                vkFreeMemory(device, img.memory, nullptr);
+            if (img.imageY != VK_NULL_HANDLE) {
+                vkDestroyImage(device, img.imageY, nullptr);
+            }
+            if (img.memoryUV != VK_NULL_HANDLE) {
+                vkFreeMemory(device, img.memoryUV, nullptr);
+            }
+            if (img.memoryY != VK_NULL_HANDLE) {
+                vkFreeMemory(device, img.memoryY, nullptr);
             }
         }
         nv12Images.clear();
@@ -293,7 +324,9 @@ private:
         return true;
     }
 
-    // Create NV12 format images for color-converted output
+    // Create separate Y and UV images for compute shader storage output
+    // Note: Multi-planar formats (like VK_FORMAT_G8_B8R8_2PLANE_420_UNORM) do not support
+    // VK_IMAGE_USAGE_STORAGE_BIT, so we use separate single-plane images instead
     bool createNV12Images(uint32_t count) {
         nv12Images.resize(count);
 
@@ -302,53 +335,93 @@ private:
             img.width = width;
             img.height = height;
 
-            // Create NV12 image (2-plane YUV 4:2:0)
-            VkImageCreateInfo imageInfo = {
+            // Create Y plane image (R8_UNORM, full resolution) with STORAGE_BIT support
+            VkImageCreateInfo yImageInfo = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                 .imageType = VK_IMAGE_TYPE_2D,
-                .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+                .format = VK_FORMAT_R8_UNORM,
                 .extent = { width, height, 1 },
                 .mipLevels = 1,
                 .arrayLayers = 1,
                 .samples = VK_SAMPLE_COUNT_1_BIT,
                 .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
             };
 
-            VkResult result = vkCreateImage(device, &imageInfo, nullptr, &img.image);
+            VkResult result = vkCreateImage(device, &yImageInfo, nullptr, &img.imageY);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create NV12 image " << i << ": " << result << std::endl;
+                std::cerr << "Failed to create Y plane image " << i << ": " << result << std::endl;
                 return false;
             }
 
-            // Allocate memory
-            VkMemoryRequirements memReqs;
-            vkGetImageMemoryRequirements(device, img.image, &memReqs);
+            // Allocate memory for Y plane
+            VkMemoryRequirements yMemReqs;
+            vkGetImageMemoryRequirements(device, img.imageY, &yMemReqs);
 
-            VkMemoryAllocateInfo allocInfo = {
+            VkMemoryAllocateInfo yAllocInfo = {
                 .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .allocationSize = memReqs.size,
-                .memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, 
+                .allocationSize = yMemReqs.size,
+                .memoryTypeIndex = vulkanDevice->getMemoryType(yMemReqs.memoryTypeBits, 
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
             };
 
-            result = vkAllocateMemory(device, &allocInfo, nullptr, &img.memory);
+            result = vkAllocateMemory(device, &yAllocInfo, nullptr, &img.memoryY);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to allocate NV12 image memory " << i << std::endl;
+                std::cerr << "Failed to allocate Y plane memory " << i << std::endl;
                 return false;
             }
 
-            vkBindImageMemory(device, img.image, img.memory, 0);
+            vkBindImageMemory(device, img.imageY, img.memoryY, 0);
 
-            // Create Y plane view (plane 0)
+            // Create UV plane image (R8G8_UNORM, half resolution) with STORAGE_BIT support
+            VkImageCreateInfo uvImageInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = VK_FORMAT_R8G8_UNORM,
+                .extent = { width / 2, height / 2, 1 },
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+
+            result = vkCreateImage(device, &uvImageInfo, nullptr, &img.imageUV);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create UV plane image " << i << ": " << result << std::endl;
+                return false;
+            }
+
+            // Allocate memory for UV plane
+            VkMemoryRequirements uvMemReqs;
+            vkGetImageMemoryRequirements(device, img.imageUV, &uvMemReqs);
+
+            VkMemoryAllocateInfo uvAllocInfo = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize = uvMemReqs.size,
+                .memoryTypeIndex = vulkanDevice->getMemoryType(uvMemReqs.memoryTypeBits, 
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+            };
+
+            result = vkAllocateMemory(device, &uvAllocInfo, nullptr, &img.memoryUV);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to allocate UV plane memory " << i << std::endl;
+                return false;
+            }
+
+            vkBindImageMemory(device, img.imageUV, img.memoryUV, 0);
+
+            // Create Y plane view
             VkImageViewCreateInfo yViewInfo = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .image = img.image,
+                .image = img.imageY,
                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
                 .format = VK_FORMAT_R8_UNORM,
-                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
             };
 
             result = vkCreateImageView(device, &yViewInfo, nullptr, &img.viewY);
@@ -357,13 +430,13 @@ private:
                 return false;
             }
 
-            // Create UV plane view (plane 1) - half resolution
+            // Create UV plane view
             VkImageViewCreateInfo uvViewInfo = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .image = img.image,
+                .image = img.imageUV,
                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
                 .format = VK_FORMAT_R8G8_UNORM,
-                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
             };
 
             result = vkCreateImageView(device, &uvViewInfo, nullptr, &img.viewUV);
@@ -371,24 +444,9 @@ private:
                 std::cerr << "Failed to create UV plane view " << i << std::endl;
                 return false;
             }
-
-            // Create full image view for video encode (color aspect)
-            VkImageViewCreateInfo fullViewInfo = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .image = img.image,
-                .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
-                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-            };
-
-            result = vkCreateImageView(device, &fullViewInfo, nullptr, &img.viewFull);
-            if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create full NV12 view " << i << std::endl;
-                return false;
-            }
         }
 
-        std::cout << "Created " << count << " NV12 images (" << width << "x" << height << ")" << std::endl;
+        std::cout << "Created " << count << " Y+UV image pairs (" << width << "x" << height << ")" << std::endl;
         return true;
     }
 
