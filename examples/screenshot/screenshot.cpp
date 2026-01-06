@@ -787,6 +787,7 @@ private:
     // Video queue family
     uint32_t videoQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     VkQueue videoQueue = VK_NULL_HANDLE;
+    VkCommandPool videoCommandPool = VK_NULL_HANDLE;
 
 public:
     VulkanH264Encoder() = default;
@@ -1085,21 +1086,21 @@ public:
     
     // Create query pool for encode feedback
     bool createQueryPool() {
+        // The pNext chain must include VkVideoProfileInfoKHR for video encode feedback queries
+        VkQueryPoolVideoEncodeFeedbackCreateInfoKHR feedbackInfo = {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_VIDEO_ENCODE_FEEDBACK_CREATE_INFO_KHR,
+            .pNext = &videoProfile,  // VkVideoProfileInfoKHR required by spec
+            .encodeFeedbackFlags = VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BUFFER_OFFSET_BIT_KHR |
+                                   VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BYTES_WRITTEN_BIT_KHR,
+        };
+        
         VkQueryPoolCreateInfo queryPoolInfo = {
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-            .pNext = &videoProfileList,
+            .pNext = &feedbackInfo,
             .flags = 0,
             .queryType = VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR,
             .queryCount = 2,  // Double-buffering
         };
-        
-        VkQueryPoolVideoEncodeFeedbackCreateInfoKHR feedbackInfo = {
-            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_VIDEO_ENCODE_FEEDBACK_CREATE_INFO_KHR,
-            .pNext = nullptr,
-            .encodeFeedbackFlags = VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BUFFER_OFFSET_BIT_KHR |
-                                   VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BYTES_WRITTEN_BIT_KHR,
-        };
-        queryPoolInfo.pNext = &feedbackInfo;
         
         VkResult result = vkCreateQueryPool(device, &queryPoolInfo, nullptr, &queryPool);
         if (result != VK_SUCCESS) {
@@ -1150,6 +1151,142 @@ public:
     VkQueue getVideoQueue() const { return videoQueue; }
     const EncoderConfig& getConfig() const { return config; }
     bool isReady() const { return isInitialized && videoSession != VK_NULL_HANDLE && sessionParams != VK_NULL_HANDLE; }
+    
+    // Create DPB (Decoded Picture Buffer) images for reference frames
+    bool createDPBImages() {
+        if (!videoSession) return false;
+        
+        // For I-frame only encoding, we need at least 1 DPB slot
+        uint32_t numDPBSlots = 1;
+        activeDPBSlots = numDPBSlots;
+        
+        for (uint32_t i = 0; i < numDPBSlots; i++) {
+            DPBSlot& slot = dpbSlots[i];
+            slot.slotIndex = static_cast<int32_t>(i);
+            
+            // Create DPB image
+            VkImageCreateInfo imageInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = &videoProfileList,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+                .extent = { config.width, config.height, 1 },
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            
+            VkResult result = vkCreateImage(device, &imageInfo, nullptr, &slot.image);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create DPB image " << i << ": " << result << std::endl;
+                return false;
+            }
+            
+            // Allocate memory
+            VkMemoryRequirements memReqs;
+            vkGetImageMemoryRequirements(device, slot.image, &memReqs);
+            
+            VkMemoryAllocateInfo allocInfo = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize = memReqs.size,
+                .memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+            };
+            
+            result = vkAllocateMemory(device, &allocInfo, nullptr, &slot.memory);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to allocate DPB image memory " << i << std::endl;
+                return false;
+            }
+            
+            vkBindImageMemory(device, slot.image, slot.memory, 0);
+            
+            // Create image view
+            VkImageViewCreateInfo viewInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = slot.image,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+            };
+            
+            result = vkCreateImageView(device, &viewInfo, nullptr, &slot.view);
+            if (result != VK_SUCCESS) {
+                std::cerr << "Failed to create DPB image view " << i << std::endl;
+                return false;
+            }
+            
+            slot.inUse = false;
+        }
+        
+        std::cout << "Created " << numDPBSlots << " DPB images" << std::endl;
+        return true;
+    }
+    
+    // Full initialization sequence - call after initialize()
+    bool setupVideoSession() {
+        if (!isInitialized) {
+            std::cerr << "Encoder not initialized" << std::endl;
+            return false;
+        }
+        
+        // Step 1: Query capabilities
+        if (!queryCapabilities()) {
+            std::cerr << "Failed to query video capabilities" << std::endl;
+            return false;
+        }
+        
+        // Step 2: Create video session
+        if (!createVideoSession()) {
+            std::cerr << "Failed to create video session" << std::endl;
+            return false;
+        }
+        
+        // Step 3: Create session parameters (SPS/PPS)
+        if (!createSessionParameters()) {
+            std::cerr << "Failed to create session parameters" << std::endl;
+            return false;
+        }
+        
+        // Step 4: Create DPB images
+        if (!createDPBImages()) {
+            std::cerr << "Failed to create DPB images" << std::endl;
+            return false;
+        }
+        
+        // Step 5: Create bitstream buffer
+        if (!createBitstreamBuffer()) {
+            std::cerr << "Failed to create bitstream buffer" << std::endl;
+            return false;
+        }
+        
+        // Step 6: Create query pool
+        if (!createQueryPool()) {
+            std::cerr << "Failed to create query pool" << std::endl;
+            return false;
+        }
+        
+        // Step 7: Create command pool for video queue
+        if (!createVideoCommandPool()) {
+            std::cerr << "Failed to create video command pool" << std::endl;
+            return false;
+        }
+        
+        std::cout << "Video encode session fully initialized" << std::endl;
+        return true;
+    }
+    
+    // Get DPB slot for encoding
+    const DPBSlot& getDPBSlot(uint32_t index) const {
+        return dpbSlots[index % activeDPBSlots];
+    }
+    
+    uint32_t getActiveDPBSlots() const { return activeDPBSlots; }
+    VkCommandPool getVideoCommandPool() const { return videoCommandPool; }
     
     // Cleanup all resources
     void cleanup() {
@@ -1207,6 +1344,11 @@ public:
             videoSession = VK_NULL_HANDLE;
         }
         
+        if (videoCommandPool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(device, videoCommandPool, nullptr);
+            videoCommandPool = VK_NULL_HANDLE;
+        }
+        
         for (auto& mem : sessionMemory) {
             if (mem != VK_NULL_HANDLE) {
                 vkFreeMemory(device, mem, nullptr);
@@ -1236,12 +1378,22 @@ private:
         sessionMemory.resize(memReqCount);
         
         for (uint32_t i = 0; i < memReqCount; i++) {
+            // Try to find device local memory first, fall back to any matching memory type
+            VkBool32 memTypeFound = VK_FALSE;
+            uint32_t memTypeIndex = vulkanDevice->getMemoryType(
+                memReqs[i].memoryRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                &memTypeFound);
+            if (!memTypeFound) {
+                // Fallback: find any memory type that matches the requirements
+                memTypeIndex = vulkanDevice->getMemoryType(
+                    memReqs[i].memoryRequirements.memoryTypeBits,
+                    0);  // No specific property requirements
+            }
             VkMemoryAllocateInfo allocInfo = {
                 .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 .allocationSize = memReqs[i].memoryRequirements.size,
-                .memoryTypeIndex = vulkanDevice->getMemoryType(
-                    memReqs[i].memoryRequirements.memoryTypeBits,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+                .memoryTypeIndex = memTypeIndex,
             };
             
             VkResult result = vkAllocateMemory(device, &allocInfo, nullptr, &sessionMemory[i]);
@@ -1267,6 +1419,24 @@ private:
         }
         
         std::cout << "Video session memory bound (" << memReqCount << " allocations)" << std::endl;
+        return true;
+    }
+    
+    // Create command pool for video encode queue
+    bool createVideoCommandPool() {
+        VkCommandPoolCreateInfo poolInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = videoQueueFamilyIndex,
+        };
+        
+        VkResult result = vkCreateCommandPool(device, &poolInfo, nullptr, &videoCommandPool);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to create video command pool: " << result << std::endl;
+            return false;
+        }
+        
+        std::cout << "Video command pool created" << std::endl;
         return true;
     }
 };
@@ -1300,6 +1470,8 @@ public:
 		title = "Saving framebuffer to screenshot";
 		apiVersion = VK_API_VERSION_1_1;
 	    settings.validation = true;
+		// Request video encode queue for H.264 encoding
+		requestedQueueTypes = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_VIDEO_ENCODE_BIT_KHR;
 		camera.type = Camera::CameraType::lookat;
 		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 512.0f);
 		camera.setRotation(glm::vec3(-25.0f, 23.75f, 0.0f));
@@ -1699,7 +1871,15 @@ public:
 			return;
 		}
 
+		// Setup video encode session (query capabilities, create session, DPB, bitstream buffer, etc.)
+		if (!h264Encoder.setupVideoSession()) {
+			std::cerr << "Failed to setup video encode session" << std::endl;
+			return;
+		}
+
 		std::cout << "Video encoding pipeline initialized successfully" << std::endl;
+		std::cout << "  Resolution: " << width << "x" << height << std::endl;
+		std::cout << "  Output: " << encoderConfig.outputPath << std::endl;
 	}
 
 	void buildCommandBuffer()
