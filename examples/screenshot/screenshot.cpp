@@ -11,6 +11,8 @@
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
 #include <fstream>
+#include <thread>
+#include <chrono>
 
 // RGB to NV12 Color Conversion Pipeline
 // Uses a compute shader to convert RGB swapchain images to NV12 format for video encoding
@@ -199,6 +201,7 @@ public:
         vkCmdDispatch(cmdBuffer, groupCountX, groupCountY, 1);
 
         if (hasEncodeImage) {
+            std::cout << "hasEncodeImage" << std::endl;
             // Transition Y/UV to TRANSFER_SRC, encode image planes to TRANSFER_DST
             VkImageMemoryBarrier copyBarriers[] = {
                 {
@@ -323,8 +326,10 @@ public:
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
         };
 
+        // srcStageMask is COMPUTE_SHADER because that's where the swapchain image was read
+        // The transfer stage only touched the NV12 images, not the swapchain image
         vkCmdPipelineBarrier(cmdBuffer,
-            hasEncodeImage ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
             0, 0, nullptr, 0, nullptr, 1, &srcPostBarrier);
     }
@@ -1110,6 +1115,17 @@ public:
         std::cout << "  Max DPB slots: " << videoCapabilities.maxDpbSlots << std::endl;
         std::cout << "  Max active refs: " << videoCapabilities.maxActiveReferencePictures << std::endl;
         std::cout << "  Min bitstream alignment: " << videoCapabilities.minBitstreamBufferSizeAlignment << std::endl;
+        std::cout << "  Supported encode feedback flags: 0x" << std::hex << encodeCapabilities.supportedEncodeFeedbackFlags << std::dec << std::endl;
+        std::cout << "  Rate control modes: 0x" << std::hex << encodeCapabilities.rateControlModes << std::dec << std::endl;
+        std::cout << "  H.264 capabilities:" << std::endl;
+        std::cout << "    Max level: " << h264Capabilities.maxLevelIdc << std::endl;
+        std::cout << "    Max slice count: " << h264Capabilities.maxSliceCount << std::endl;
+        std::cout << "    Max PPicture L0 ref count: " << h264Capabilities.maxPPictureL0ReferenceCount << std::endl;
+        std::cout << "    Max BPicture L0 ref count: " << h264Capabilities.maxBPictureL0ReferenceCount << std::endl;
+        std::cout << "    Max L1 ref count: " << h264Capabilities.maxL1ReferenceCount << std::endl;
+        std::cout << "    Max temporal layer count: " << h264Capabilities.maxTemporalLayerCount << std::endl;
+        std::cout << "    Preferred max L0 ref count: " << h264Capabilities.maxQp << std::endl;
+        std::cout << "    Flags: 0x" << std::hex << h264Capabilities.flags << std::dec << std::endl;
         
         return true;
     }
@@ -1118,26 +1134,26 @@ public:
     bool createVideoSession() {
         if (!device || !isInitialized) return false;
         
-        // Find video encode queue family
-        uint32_t queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
-        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
+        // Use the video encode queue family index from the base device
+        // This ensures we use the queue family that was actually created
+        videoQueueFamilyIndex = vulkanDevice->queueFamilyIndices.videoEncode;
         
-        for (uint32_t i = 0; i < queueFamilyCount; i++) {
-            if (queueFamilies[i].queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) {
-                videoQueueFamilyIndex = i;
-                break;
-            }
-        }
+        std::cout << "Using video encode queue family index: " << videoQueueFamilyIndex << std::endl;
         
-        if (videoQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
-            std::cerr << "No video encode queue family found" << std::endl;
+        if (videoQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED || videoQueueFamilyIndex == 0xFFFFFFFF) {
+            std::cerr << "No video encode queue family found in device" << std::endl;
             return false;
         }
         
         // Get video queue
         vkGetDeviceQueue(device, videoQueueFamilyIndex, 0, &videoQueue);
+        
+        if (videoQueue == VK_NULL_HANDLE) {
+            std::cerr << "Failed to get video encode queue" << std::endl;
+            return false;
+        }
+        
+        std::cout << "Got video encode queue: " << videoQueue << std::endl;
         
         // Create video session
         VkVideoSessionCreateInfoKHR sessionCreateInfo = {
@@ -1190,21 +1206,22 @@ public:
         sps.bit_depth_luma_minus8 = 0;
         sps.bit_depth_chroma_minus8 = 0;
         sps.log2_max_frame_num_minus4 = 4;  // max_frame_num = 256
-        sps.pic_order_cnt_type = STD_VIDEO_H264_POC_TYPE_2;
-        sps.log2_max_pic_order_cnt_lsb_minus4 = 0;
+        sps.pic_order_cnt_type = STD_VIDEO_H264_POC_TYPE_0;  // POC type 0 is more widely supported
+        sps.log2_max_pic_order_cnt_lsb_minus4 = 4;  // max_pic_order_cnt_lsb = 2^8 = 256
         sps.max_num_ref_frames = 1;
         sps.pic_width_in_mbs_minus1 = (config.width + 15) / 16 - 1;
         sps.pic_height_in_map_units_minus1 = (config.height + 15) / 16 - 1;
         
         // H.264 PPS (Picture Parameter Set)
         StdVideoH264PictureParameterSet pps = {};
-        pps.flags.entropy_coding_mode_flag = 1;  // CABAC
-        // pps.flags.pic_order_present_flag = 0;
+        pps.flags.entropy_coding_mode_flag = 0;  // CAVLC (0) instead of CABAC (1) for simpler encoding
+        pps.flags.bottom_field_pic_order_in_frame_present_flag = 0;
         pps.flags.weighted_pred_flag = 0;
         pps.flags.deblocking_filter_control_present_flag = 1;
         pps.flags.constrained_intra_pred_flag = 0;
         pps.flags.redundant_pic_cnt_present_flag = 0;
         pps.flags.transform_8x8_mode_flag = 0;
+        pps.flags.pic_scaling_matrix_present_flag = 0;
         pps.seq_parameter_set_id = 0;
         pps.pic_parameter_set_id = 0;
         pps.num_ref_idx_l0_default_active_minus1 = 0;
@@ -1330,8 +1347,9 @@ public:
         if (!outputFile.is_open() || !data || size == 0) return;
         
         // NAL start code
-        static const uint8_t startCode[] = { 0x00, 0x00, 0x00, 0x01 };
-        outputFile.write(reinterpret_cast<const char*>(startCode), sizeof(startCode));
+        // startCode not needed data already includes start codes
+        // static const uint8_t startCode[] = { 0x00, 0x00, 0x00, 0x01 };
+        // outputFile.write(reinterpret_cast<const char*>(startCode), sizeof(startCode));
         outputFile.write(reinterpret_cast<const char*>(data), size);
     }
     
@@ -1418,9 +1436,10 @@ public:
             
             vkBindImageMemory(device, slot.image, slot.memory, 0);
             
-            // Create image view
+            // Create image view for DPB
             VkImageViewCreateInfo viewInfo = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext = nullptr,
                 .image = slot.image,
                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
                 .format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
@@ -1508,8 +1527,12 @@ public:
                      uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
         if (!isReady()) return false;
         
+        std::cout << "[Encode] Starting frame " << frameCounter << std::endl;
+        
         // Wait for previous encode to complete
+        std::cout << "[Encode] Waiting for previous encode fence..." << std::endl;
         vkWaitForFences(device, 1, &encodeFence, VK_TRUE, UINT64_MAX);
+        std::cout << "[Encode] Previous fence signaled, resetting..." << std::endl;
         vkResetFences(device, 1, &encodeFence);
         
         // Reset command buffer
@@ -1523,9 +1546,11 @@ public:
         VK_CHECK_RESULT(vkBeginCommandBuffer(encodeCommandBuffer, &beginInfo));
         
         // Record encode commands with queue family ownership transfer if needed
+        std::cout << "[Encode] Recording encode commands..." << std::endl;
         recordEncodeCommands(encodeCommandBuffer, srcImage, srcView, srcQueueFamily);
         
         VK_CHECK_RESULT(vkEndCommandBuffer(encodeCommandBuffer));
+        std::cout << "[Encode] Command buffer recorded" << std::endl;
         
         // Submit encode command buffer
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -1540,38 +1565,97 @@ public:
             .pSignalSemaphores = nullptr,
         };
         
+        std::cout << "[Encode] Submitting to video queue (waitSemaphore=" 
+                  << (waitSemaphore != VK_NULL_HANDLE ? "yes" : "no") << ")..." << std::endl;
         VkResult result = vkQueueSubmit(videoQueue, 1, &submitInfo, encodeFence);
         if (result != VK_SUCCESS) {
             std::cerr << "Failed to submit encode command buffer: " << result << std::endl;
             return false;
         }
+        std::cout << "[Encode] Submitted successfully" << std::endl;
         
         // Wait for encode to complete and read back results
-        vkWaitForFences(device, 1, &encodeFence, VK_TRUE, UINT64_MAX);
+        std::cout << "[Encode] Waiting for encode fence..." << std::endl;
+        result = vkWaitForFences(device, 1, &encodeFence, VK_TRUE, UINT64_MAX);
+        std::cout << "[Encode] Encode fence signaled (result=" << result << ")" << std::endl;
+        
+        // Also wait on the queue to ensure all work is done
+        std::cout << "[Encode] Waiting for video queue idle..." << std::endl;
+        result = vkQueueWaitIdle(videoQueue);
+        std::cout << "[Encode] Video queue idle (result=" << result << ")" << std::endl;
         
         // Query encode results
-        struct EncodeFeedback {
+        // Try reading raw bytes first to see what the driver actually writes
+        uint8_t rawData[64] = {0};
+        
+        // First try with just the status bit to see if query is available at all
+        result = vkGetQueryPoolResults(device, queryPool, 0, 1, sizeof(rawData), rawData,
+            sizeof(rawData), VK_QUERY_RESULT_WITH_STATUS_BIT_KHR);
+        
+        std::cout << "[Encode] Raw query result: " << result << std::endl;
+        std::cout << "[Encode] Raw bytes: ";
+        for (int i = 0; i < 32; i++) {
+            printf("%02x ", rawData[i]);
+        }
+        std::cout << std::endl;
+        
+        if (result == VK_NOT_READY) {
+            // Try with 64-bit flag
+            result = vkGetQueryPoolResults(device, queryPool, 0, 1, sizeof(rawData), rawData,
+                sizeof(rawData), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_STATUS_BIT_KHR);
+            std::cout << "[Encode] With 64-bit: result=" << result << std::endl;
+        }
+        
+        // Parse results - format depends on flags used
+        // With VK_QUERY_RESULT_WITH_STATUS_BIT_KHR:
+        //   - First comes the feedback data (offset, bytesWritten) 
+        //   - Then status as int32_t
+        // Without VK_QUERY_RESULT_64_BIT, each value is 32-bit
+        struct EncodeFeedback32 {
             uint32_t offset;
-            uint32_t size;
-            uint32_t status;
-        } feedback;
+            uint32_t bytesWritten;
+            int32_t status;
+        };
+        EncodeFeedback32* fb32 = reinterpret_cast<EncodeFeedback32*>(rawData);
+        std::cout << "[Encode] As 32-bit: offset=" << fb32->offset << ", bytes=" << fb32->bytesWritten 
+                  << ", status=" << fb32->status << std::endl;
         
-        result = vkGetQueryPoolResults(device, queryPool, 0, 1, sizeof(feedback), &feedback,
-            sizeof(feedback), VK_QUERY_RESULT_WAIT_BIT);
+        // Also try 64-bit interpretation
+        struct EncodeFeedback64 {
+            uint64_t offset;
+            uint64_t bytesWritten;
+            int64_t status;
+        };
+        EncodeFeedback64* fb64 = reinterpret_cast<EncodeFeedback64*>(rawData);
+        std::cout << "[Encode] As 64-bit: offset=" << fb64->offset << ", bytes=" << fb64->bytesWritten 
+                  << ", status=" << fb64->status << std::endl;
         
-        if (result != VK_SUCCESS || feedback.status != VK_QUERY_RESULT_STATUS_COMPLETE_KHR) {
-            std::cerr << "Encode query failed: result=" << result << ", status=" << feedback.status << std::endl;
+        // If query not ready, something went wrong with the encode
+        if (result == VK_NOT_READY) {
+            std::cerr << "[Encode] Query not ready after GPU completed - encode may have been skipped" << std::endl;
+            // Check if maybe the status field has useful info
+            std::cerr << "[Encode] Status from raw data: 32-bit=" << fb32->status 
+                      << ", 64-bit=" << fb64->status << std::endl;
             return false;
         }
         
-        // Write encoded data to file
-        if (feedback.size > 0 && bitstreamMappedPtr) {
-            const uint8_t* data = static_cast<const uint8_t*>(bitstreamMappedPtr) + feedback.offset;
-            writeNALUnit(data, feedback.size);
+        // Check status from 32-bit interpretation (without VK_QUERY_RESULT_64_BIT)
+        if (fb32->status != VK_QUERY_RESULT_STATUS_COMPLETE_KHR) {
+            std::cerr << "[Encode] Encode status not complete: " << fb32->status 
+                      << " (COMPLETE=" << VK_QUERY_RESULT_STATUS_COMPLETE_KHR 
+                      << ", ERROR=" << VK_QUERY_RESULT_STATUS_ERROR_KHR << ")" << std::endl;
+            // Still continue to see what data we got
+        }
+        
+        // Write encoded data to file using 32-bit values
+        if (result == VK_SUCCESS && fb32->bytesWritten > 0 && bitstreamMappedPtr) {
+            std::cout << "[Encode] Writing " << fb32->bytesWritten << " bytes at offset " << fb32->offset << std::endl;
+            const uint8_t* data = static_cast<const uint8_t*>(bitstreamMappedPtr) + fb32->offset;
+            writeNALUnit(data, static_cast<size_t>(fb32->bytesWritten));
         }
         
         frameCounter++;
-        return true;
+        return result == VK_SUCCESS;
     }
     
     // Get DPB slot for encoding
@@ -1806,7 +1890,8 @@ private:
         
         // Transition source image planes - acquire ownership if needed
         // Image is already in VIDEO_ENCODE_SRC_KHR layout from compute stage
-        std::array<VkImageMemoryBarrier2, 3> preBarriers = {{
+        // DPB image is also multi-planar NV12, so we need barriers for both planes
+        std::array<VkImageMemoryBarrier2, 4> preBarriers = {{
             {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                 .srcStageMask = VK_PIPELINE_STAGE_2_NONE,  // Already synchronized via semaphore
@@ -1833,18 +1918,33 @@ private:
                 .image = srcImage,
                 .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
             },
+            // DPB image plane 0 barrier (multi-planar NV12 format requires separate plane barriers)
             {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                 .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
                 .srcAccessMask = VK_ACCESS_2_NONE,
                 .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR | VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = dpbSlot.image,
-                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+            },
+            // DPB image plane 1 barrier
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR | VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = dpbSlot.image,
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
             }
         }};
         
@@ -1858,22 +1958,35 @@ private:
         
         // H.264 slice header info
         StdVideoEncodeH264SliceHeader sliceHeader = {};
-        sliceHeader.slice_type = isIDR ? STD_VIDEO_H264_SLICE_TYPE_I : STD_VIDEO_H264_SLICE_TYPE_I;
+        sliceHeader.flags.direct_spatial_mv_pred_flag = 0;
+        sliceHeader.flags.num_ref_idx_active_override_flag = 0;
+        sliceHeader.first_mb_in_slice = 0;  // First macroblock
+        sliceHeader.slice_type = STD_VIDEO_H264_SLICE_TYPE_I;  // Always I slice
+        sliceHeader.slice_alpha_c0_offset_div2 = 0;
+        sliceHeader.slice_beta_offset_div2 = 0;
+        sliceHeader.slice_qp_delta = 0;
+        // cabac_init_idc is ignored when entropy_coding_mode_flag is 0 (CAVLC)
         sliceHeader.cabac_init_idc = STD_VIDEO_H264_CABAC_INIT_IDC_0;
         sliceHeader.disable_deblocking_filter_idc = STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED;
-        
-        StdVideoEncodeH264ReferenceListsInfo refListInfo = {};
         
         StdVideoEncodeH264PictureInfo stdPicInfo = {};
         stdPicInfo.flags.IdrPicFlag = isIDR ? 1 : 0;
         stdPicInfo.flags.is_reference = 1;
+        stdPicInfo.flags.no_output_of_prior_pics_flag = 0;
+        stdPicInfo.flags.long_term_reference_flag = 0;
+        stdPicInfo.flags.adaptive_ref_pic_marking_mode_flag = 0;
         stdPicInfo.seq_parameter_set_id = 0;
         stdPicInfo.pic_parameter_set_id = 0;
         stdPicInfo.idr_pic_id = isIDR ? idrPicId++ : 0;
-        stdPicInfo.primary_pic_type = STD_VIDEO_H264_PICTURE_TYPE_I;
-        stdPicInfo.frame_num = static_cast<uint32_t>(frameCounter % 256);
-        stdPicInfo.PicOrderCnt = static_cast<int32_t>(frameCounter * 2);
-        stdPicInfo.pRefLists = &refListInfo;
+        // For IDR frames, primary_pic_type must be IDR; for I-frames use I
+        stdPicInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : STD_VIDEO_H264_PICTURE_TYPE_I;
+        // For IDR frames, frame_num should be 0 since IDR resets the DPB
+        stdPicInfo.frame_num = isIDR ? 0 : static_cast<uint32_t>(frameCounter % 256);
+        // For POC type 0, PicOrderCnt should wrap around at max_pic_order_cnt_lsb (256)
+        // For IDR frames, POC starts at 0
+        stdPicInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((frameCounter * 2) % 256);
+        stdPicInfo.temporal_id = 0;
+        stdPicInfo.pRefLists = nullptr;  // No reference lists for I-frames
         
         // H.264 NALU slice info
         VkVideoEncodeH264NaluSliceInfoKHR sliceInfo = {
@@ -1905,9 +2018,15 @@ private:
         
         // H.264 DPB slot info
         StdVideoEncodeH264ReferenceInfo stdRefInfo = {};
-        stdRefInfo.primary_pic_type = STD_VIDEO_H264_PICTURE_TYPE_I;
-        stdRefInfo.FrameNum = static_cast<uint32_t>(frameCounter % 256);
-        stdRefInfo.PicOrderCnt = static_cast<int32_t>(frameCounter * 2);
+        stdRefInfo.flags.used_for_long_term_reference = 0;
+        // Reference info should match the picture type
+        stdRefInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : STD_VIDEO_H264_PICTURE_TYPE_I;
+        // For IDR frames, frame_num is 0; POC also starts at 0
+        stdRefInfo.FrameNum = isIDR ? 0 : static_cast<uint32_t>(frameCounter % 256);
+        stdRefInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((frameCounter * 2) % 256);
+        stdRefInfo.long_term_pic_num = 0;
+        stdRefInfo.long_term_frame_idx = 0;
+        stdRefInfo.temporal_id = 0;
         
         VkVideoEncodeH264DpbSlotInfoKHR h264DpbSlotInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
@@ -1952,10 +2071,27 @@ private:
         VkVideoReferenceSlotInfoKHR beginSlot = setupSlot;
         beginSlot.slotIndex = -1;  // Mark as not yet assigned
         
+        // Reset query pool before beginning video coding (must be outside video coding scope)
+        vkCmdResetQueryPool(cmdBuffer, queryPool, 0, 1);
+        
+        // Rate control info for DISABLED mode (constant QP)
+        VkVideoEncodeRateControlInfoKHR rateControlInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR,
+            .pNext = nullptr,
+            .flags = 0,
+            .rateControlMode = VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR,
+            .layerCount = 0,
+            .pLayers = nullptr,
+            .virtualBufferSizeInMs = 0,
+            .initialVirtualBufferSizeInMs = 0,
+        };
+        
         // Begin video coding
+        // - First frame: Don't include rate control (it's still DEFAULT)
+        // - Subsequent frames: Include rate control matching current state (DISABLED)
         VkVideoBeginCodingInfoKHR beginInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
-            .pNext = nullptr,
+            .pNext = sessionReset ? &rateControlInfo : nullptr,  // Only after rate control is configured
             .flags = 0,
             .videoSession = videoSession,
             .videoSessionParameters = sessionParams,
@@ -1965,28 +2101,40 @@ private:
         
         fp_vkCmdBeginVideoCodingKHR(cmdBuffer, &beginInfo);
         
-        // Reset session on first frame
+        // Reset session and configure rate control on first frame
         if (!sessionReset) {
+            // First reset the session
             VkVideoCodingControlInfoKHR controlInfo = {
                 .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
                 .pNext = nullptr,
                 .flags = VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR,
             };
             fp_vkCmdControlVideoCodingKHR(cmdBuffer, &controlInfo);
+            
+            // Then set rate control mode to DISABLED for constant QP encoding
+            VkVideoCodingControlInfoKHR rateControlCommand = {
+                .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
+                .pNext = &rateControlInfo,
+                .flags = VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR,
+            };
+            fp_vkCmdControlVideoCodingKHR(cmdBuffer, &rateControlCommand);
+            
             sessionReset = true;
         }
         
-        // Reset query
-        vkCmdResetQueryPool(cmdBuffer, queryPool, 0, 1);
-        
-        // Begin query
+        // Begin query - use index 0
+        // Note: For video encode feedback queries, we use the query within the video coding scope
+        std::cout << "[Encode] Beginning query..." << std::endl;
         vkCmdBeginQuery(cmdBuffer, queryPool, 0, 0);
         
         // Encode
+        std::cout << "[Encode] Recording vkCmdEncodeVideoKHR..." << std::endl;
         fp_vkCmdEncodeVideoKHR(cmdBuffer, &encodeInfo);
+        std::cout << "[Encode] Encode command recorded" << std::endl;
         
         // End query
         vkCmdEndQuery(cmdBuffer, queryPool, 0);
+        std::cout << "[Encode] Query ended" << std::endl;
         
         // End video coding
         VkVideoEndCodingInfoKHR endInfo = {
@@ -2044,7 +2192,7 @@ public:
 	VulkanExample() : VulkanExampleBase(), uniformBuffers{}
 	{
 		title = "Saving framebuffer to screenshot";
-		apiVersion = VK_API_VERSION_1_1;
+		apiVersion = VK_API_VERSION_1_3;
 	    settings.validation = true;
 		// Request video encode queue for H.264 encoding
 		requestedQueueTypes = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_VIDEO_ENCODE_BIT_KHR;
@@ -2576,8 +2724,12 @@ public:
 	// Encode the current frame to H.264
 	void encodeCurrentFrame()
 	{
+		std::cout << "[Frame] Starting encode of frame " << encodedFrameCount << std::endl;
+		
 		// Wait for previous color conversion to complete
+		std::cout << "[Frame] Waiting for color convert fence..." << std::endl;
 		vkWaitForFences(device, 1, &colorConvertFence, VK_TRUE, UINT64_MAX);
+		std::cout << "[Frame] Color convert fence signaled" << std::endl;
 		vkResetFences(device, 1, &colorConvertFence);
 		
 		// Record color conversion commands
@@ -2588,33 +2740,46 @@ public:
 		
 		// Dispatch RGB to NV12 conversion
 		// Pass queue family info for ownership transfer if needed
+		std::cout << "[Frame] Recording color conversion commands..." << std::endl;
 		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, currentImageIndex, 
 		                                   swapChain.images[currentImageIndex],
 		                                   graphicsQueueFamily, videoQueueFamily);
 		
 		VK_CHECK_RESULT(vkEndCommandBuffer(colorConvertCmdBuffer));
+		std::cout << "[Frame] Color conversion command buffer recorded" << std::endl;
 		
-		// Submit color conversion with semaphore signaling for cross-queue sync
+		// Submit color conversion to graphics queue
+		// Note: Since we wait on the fence before encoding, we don't need semaphore signaling
 		VkSubmitInfo submitInfo = vks::initializers::submitInfo();
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &colorConvertCmdBuffer;
+		// No semaphore signaling - we use fence-based synchronization
+		submitInfo.signalSemaphoreCount = 0;
+		submitInfo.pSignalSemaphores = nullptr;
 		
-		// Signal semaphore when color conversion is complete
-		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = &colorConvertCompleteSemaphore;
-		
+		std::cout << "[Frame] Submitting color conversion to graphics queue..." << std::endl;
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, colorConvertFence));
+		std::cout << "[Frame] Color conversion submitted, semaphore will be signaled" << std::endl;
+		
+		// Wait for color conversion to actually complete before encoding
+		// This ensures the data is in the encode image before we try to encode
+		std::cout << "[Frame] Waiting for color conversion to complete on GPU..." << std::endl;
+		vkWaitForFences(device, 1, &colorConvertFence, VK_TRUE, UINT64_MAX);
+		std::cout << "[Frame] Color conversion complete" << std::endl;
 		
 		// Get NV12 images for encoding
 		const auto& nv12Image = rgbToNv12Converter.getNV12Image(currentImageIndex);
 		
-		// Encode the frame - pass semaphore to wait on before encoding
-		// The encoder will wait for color conversion to complete via semaphore
+		// Encode the frame - don't pass semaphore since we waited for fence
 		// Pass graphicsQueueFamily for ownership acquire on video queue
+		std::cout << "[Frame] Calling encodeFrame..." << std::endl;
 		if (h264Encoder.encodeFrame(nv12Image.encodeImage, nv12Image.encodeView, queue,
-		                            colorConvertCompleteSemaphore,
+		                            VK_NULL_HANDLE,  // No semaphore, we waited on fence
 		                            graphicsQueueFamily)) {
 			encodedFrameCount++;
+			std::cout << "[Frame] Frame encoded successfully, total: " << encodedFrameCount << std::endl;
+		} else {
+			std::cerr << "[Frame] Frame encoding failed!" << std::endl;
 		}
 	}
 
