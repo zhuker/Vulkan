@@ -887,7 +887,6 @@ public:
     struct EncoderConfig {
         uint32_t width = 0;
         uint32_t height = 0;
-        uint32_t frameRate = 60;
         uint32_t gopSize = 60;       // GOP size: 60 frames = 1 second at 60fps (I+P frames)
         uint32_t qp = 23;            // Constant QP for CQP rate control
         std::string outputPath = "recording.h264";
@@ -981,6 +980,7 @@ private:
     int32_t lastRefSlotIndex = -1;      // DPB slot index of last reconstructed frame
     uint32_t lastRefFrameNum = 0;       // frame_num of last reference
     int32_t lastRefPicOrderCnt = 0;     // PicOrderCnt of last reference
+    StdVideoH264PictureType lastRefPicType = STD_VIDEO_H264_PICTURE_TYPE_IDR;  // Picture type of last reference
     
     // Configuration
     EncoderConfig config{};
@@ -1437,11 +1437,6 @@ public:
         std::cout << "[GOP] Frame " << frameCounter << ": isNextFrameIDR = " << result 
                   << " (gopSize=" << config.gopSize << ", mod=" << (frameCounter % config.gopSize) << ")" << std::endl;
         return result;
-    }
-    
-    // Increment frame counter
-    void nextFrame() { 
-        frameCounter++; 
     }
     
     // Accessors
@@ -2002,65 +1997,109 @@ private:
         bool needsOwnershipAcquire = (srcQueueFamily != VK_QUEUE_FAMILY_IGNORED) && 
                                       (srcQueueFamily != videoQueueFamilyIndex);
         
-        // Transition source image planes - acquire ownership if needed
-        // Image is already in VIDEO_ENCODE_SRC_KHR layout from compute stage
-        // DPB image is also multi-planar NV12, so we need barriers for both planes
-        std::array<VkImageMemoryBarrier2, 4> preBarriers = {{
-            {
+        // Build barriers dynamically based on whether we have a reference frame
+        // Base barriers: 2 for source image planes + 2 for output DPB slot planes
+        // For P-frames: + 2 more for reference DPB slot planes
+        std::vector<VkImageMemoryBarrier2> preBarriers;
+        preBarriers.reserve(isP && lastRefSlotIndex >= 0 ? 6 : 4);
+        
+        // Source image plane 0 barrier
+        preBarriers.push_back({
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,  // Already synchronized via semaphore
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+            .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+            .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+            .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+            .srcQueueFamilyIndex = needsOwnershipAcquire ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = needsOwnershipAcquire ? videoQueueFamilyIndex : VK_QUEUE_FAMILY_IGNORED,
+            .image = srcImage,
+            .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+        });
+        
+        // Source image plane 1 barrier
+        preBarriers.push_back({
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+            .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+            .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+            .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+            .srcQueueFamilyIndex = needsOwnershipAcquire ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = needsOwnershipAcquire ? videoQueueFamilyIndex : VK_QUEUE_FAMILY_IGNORED,
+            .image = srcImage,
+            .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
+        });
+        
+        // Output DPB image plane 0 barrier (for reconstructed frame)
+        preBarriers.push_back({
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+            .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR | VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dpbSlot.image,
+            .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
+        });
+        
+        // Output DPB image plane 1 barrier
+        preBarriers.push_back({
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+            .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR | VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = dpbSlot.image,
+            .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
+        });
+        
+        // For P-frames, add barriers for the REFERENCE DPB slot (the previous reconstructed frame)
+        // This ensures the reference data is properly synchronized for reading
+        if (isP && lastRefSlotIndex >= 0) {
+            DPBSlot& refDpbSlot = dpbSlots[lastRefSlotIndex];
+            std::cout << "[GOP] Adding reference DPB barriers for slot " << lastRefSlotIndex << std::endl;
+            
+            // Reference DPB image plane 0 barrier - transition from DPB layout to DPB layout
+            // (preserves content, just ensures synchronization)
+            preBarriers.push_back({
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,  // Already synchronized via semaphore
-                .srcAccessMask = VK_ACCESS_2_NONE,
+                .srcStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                .srcAccessMask = VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
                 .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
                 .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
-                .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
-                .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
-                .srcQueueFamilyIndex = needsOwnershipAcquire ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = needsOwnershipAcquire ? videoQueueFamilyIndex : VK_QUEUE_FAMILY_IGNORED,
-                .image = srcImage,
-                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
-            },
-            {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                .srcAccessMask = VK_ACCESS_2_NONE,
-                .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
-                .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
-                .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
-                .srcQueueFamilyIndex = needsOwnershipAcquire ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = needsOwnershipAcquire ? videoQueueFamilyIndex : VK_QUEUE_FAMILY_IGNORED,
-                .image = srcImage,
-                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
-            },
-            // DPB image plane 0 barrier (multi-planar NV12 format requires separate plane barriers)
-            {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                .srcAccessMask = VK_ACCESS_2_NONE,
-                .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR | VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
-                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
                 .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = dpbSlot.image,
+                .image = refDpbSlot.image,
                 .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 1, 0, 1 }
-            },
-            // DPB image plane 1 barrier
-            {
+            });
+            
+            // Reference DPB image plane 1 barrier
+            preBarriers.push_back({
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                .srcAccessMask = VK_ACCESS_2_NONE,
+                .srcStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
+                .srcAccessMask = VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
                 .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR | VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
-                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+                .oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
                 .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = dpbSlot.image,
+                .image = refDpbSlot.image,
                 .subresourceRange = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 }
-            }
-        }};
+            });
+        }
         
         VkDependencyInfo dependencyInfo = {
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -2083,16 +2122,24 @@ private:
         sliceHeader.cabac_init_idc = STD_VIDEO_H264_CABAC_INIT_IDC_0;
         sliceHeader.disable_deblocking_filter_idc = STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED;
         
-        std::cout << "[GOP] Slice type: " << (int)sliceHeader.slice_type <<"\n                  << (" << (isP ? "P" : "I") << "-slice)" << std::endl;        
+        std::cout << "[GOP] Slice type: " << (int)sliceHeader.slice_type << "(" << (isP ? "P" : "I") << "-slice)" << std::endl;        
         // Build reference lists for P-frames
         StdVideoEncodeH264ReferenceListsInfo refLists = {};
-        uint8_t refPicList0[STD_VIDEO_H264_MAX_NUM_LIST_REF] = {};
+        // Initialize all entries to NO_REFERENCE to satisfy VUID 08339
+        for (uint32_t i = 0; i < STD_VIDEO_H264_MAX_NUM_LIST_REF; ++i) {
+            refLists.RefPicList0[i] = STD_VIDEO_H264_NO_REFERENCE_PICTURE;
+            refLists.RefPicList1[i] = STD_VIDEO_H264_NO_REFERENCE_PICTURE;
+        }
         if (isP && lastRefSlotIndex >= 0) {
+            // One valid reference in L0 pointing to the input ref slot
             refLists.RefPicList0[0] = static_cast<uint8_t>(lastRefSlotIndex);  // DPB slot index of reference frame
             refLists.num_ref_idx_l0_active_minus1 = 0;  // 1 reference in L0
             refLists.num_ref_idx_l1_active_minus1 = 0;
             std::cout << "[GOP] Building reference list: L0[0]=" << (int)refLists.RefPicList0[0] << ", num_ref_l0=1" << std::endl;
         } else {
+            // No references used; keep lists filled with NO_REFERENCE and set counts to 0
+            refLists.num_ref_idx_l0_active_minus1 = 0;
+            refLists.num_ref_idx_l1_active_minus1 = 0;
             std::cout << "[GOP] No reference list (I-frame or no previous ref)" << std::endl;
         }
         
@@ -2112,6 +2159,10 @@ private:
         // For POC type 0, PicOrderCnt should wrap around at max_pic_order_cnt_lsb (256)
         // For IDR frames, POC starts at 0
         stdPicInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((frameCounter * 2) % 256);
+        if (isIDR) {
+            // if stdPicInfo.frame_num is not set correctly ffplay ignores or skips frames randly 
+            frameCounter = 0;  // Reset frame counter after IDR for consistent POC
+        }
         stdPicInfo.temporal_id = 0;
         stdPicInfo.pRefLists = (isP && lastRefSlotIndex >= 0) ? &refLists : nullptr;
         
@@ -2202,16 +2253,18 @@ private:
                 .imageViewBinding = refSlot.view,
             };
             
-            // Reference frame info
+            // Reference frame info - use the actual picture type of the reference frame
             refStdInfo.flags.used_for_long_term_reference = 0;
-            refStdInfo.primary_pic_type = STD_VIDEO_H264_PICTURE_TYPE_P;  // Previous frame was also P (or I)
+            refStdInfo.primary_pic_type = lastRefPicType;  // Use tracked picture type of reference
             refStdInfo.FrameNum = lastRefFrameNum;
             refStdInfo.PicOrderCnt = lastRefPicOrderCnt;
             refStdInfo.long_term_pic_num = 0;
             refStdInfo.long_term_frame_idx = 0;
             refStdInfo.temporal_id = 0;
             
-            std::cout << "[GOP] Input ref: FrameNum=" << refStdInfo.FrameNum                      << ", POC=" << refStdInfo.PicOrderCnt << std::endl;            
+            std::cout << "[GOP] Input ref: FrameNum=" << refStdInfo.FrameNum 
+                      << ", POC=" << refStdInfo.PicOrderCnt 
+                      << ", picType=" << (int)refStdInfo.primary_pic_type << std::endl;            
             refH264DpbSlotInfo = {
                 .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
                 .pNext = nullptr,
@@ -2334,9 +2387,10 @@ private:
         lastRefSlotIndex = slotIndex;
         lastRefFrameNum = stdPicInfo.frame_num;
         lastRefPicOrderCnt = stdPicInfo.PicOrderCnt;
+        lastRefPicType = stdPicInfo.primary_pic_type;
 
         std::cout << "[GOP] Updated reference tracking: slot=" << lastRefSlotIndex << ", frameNum=" << lastRefFrameNum
-            << ", POC=" << lastRefPicOrderCnt << std::endl;
+            << ", POC=" << lastRefPicOrderCnt << ", picType=" << (int)lastRefPicType << std::endl;
         std::cout << "========== END ENCODE FRAME " << frameCounter << " ==========" << std::endl;
         
         // End video coding
@@ -2811,8 +2865,7 @@ public:
 		VulkanH264Encoder::EncoderConfig encoderConfig;
 		encoderConfig.width = width;
 		encoderConfig.height = height;
-		encoderConfig.frameRate = 60;
-		encoderConfig.gopSize = 60;  // All I-frames
+		encoderConfig.gopSize = 80;  // All I-frames
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
 
