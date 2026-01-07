@@ -888,7 +888,7 @@ public:
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t frameRate = 60;
-        uint32_t gopSize = 1;        // All I-frames for simplicity
+        uint32_t gopSize = 60;       // GOP size: 60 frames = 1 second at 60fps (I+P frames)
         uint32_t qp = 23;            // Constant QP for CQP rate control
         std::string outputPath = "recording.h264";
     };
@@ -976,6 +976,11 @@ private:
     uint64_t frameCounter = 0;
     uint64_t lastIDRFrame = 0;
     uint16_t idrPicId = 0;
+    
+    // Reference frame tracking for P-frames
+    int32_t lastRefSlotIndex = -1;      // DPB slot index of last reconstructed frame
+    uint32_t lastRefFrameNum = 0;       // frame_num of last reference
+    int32_t lastRefPicOrderCnt = 0;     // PicOrderCnt of last reference
     
     // Configuration
     EncoderConfig config{};
@@ -1428,7 +1433,10 @@ public:
     
     // Check if next frame should be IDR
     bool isNextFrameIDR() const {
-        return (frameCounter == 0) || (config.gopSize > 0 && (frameCounter % config.gopSize == 0));
+        bool result = (frameCounter == 0) || (config.gopSize > 0 && (frameCounter % config.gopSize == 0));
+        std::cout << "[GOP] Frame " << frameCounter << ": isNextFrameIDR = " << result 
+                  << " (gopSize=" << config.gopSize << ", mod=" << (frameCounter % config.gopSize) << ")" << std::endl;
+        return result;
     }
     
     // Increment frame counter
@@ -1457,8 +1465,9 @@ public:
     bool createDPBImages() {
         if (!videoSession) return false;
         
-        // For I-frame only encoding, we need at least 1 DPB slot
-        uint32_t numDPBSlots = 1;
+        // For P-frame encoding (gopSize > 1), we need 2 DPB slots for ping-pong buffering
+        // For I-frame only (gopSize == 1), we need 1 DPB slot
+        uint32_t numDPBSlots = (config.gopSize > 1) ? 2 : 1;
         activeDPBSlots = numDPBSlots;
         
         for (uint32_t i = 0; i < numDPBSlots; i++) {
@@ -1828,6 +1837,17 @@ public:
     }
 
 private:
+    // Helper to determine if current frame should be encoded as P-frame
+    bool isPFrame() const {
+        bool notIDR = !isNextFrameIDR();
+        bool result = config.gopSize > 1 && notIDR && frameCounter > 0;
+        std::cout << "[GOP] Frame " << frameCounter << ": isPFrame = " << result 
+                  << " (gopSize>1: " << (config.gopSize > 1) << ", notIDR: " << notIDR 
+                  << ", frameCounter>0: " << (frameCounter > 0) 
+                  << ", lastRefSlot: " << lastRefSlotIndex << ")" << std::endl;
+        return result;
+    }
+    
     // Bind memory to video session (required before use)
     bool bindVideoSessionMemory() {
         uint32_t memReqCount = 0;
@@ -1958,8 +1978,22 @@ private:
     // If srcQueueFamily differs from video queue family, we need to acquire ownership
     void recordEncodeCommands(VkCommandBuffer cmdBuffer, VkImage srcImage, VkImageView srcView,
                               uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
+        std::cout << "\n========== ENCODE FRAME " << frameCounter << " ==========" << std::endl;
+        std::cout << "[GOP] Config: gopSize=" << config.gopSize << ", qp=" << config.qp << std::endl;
+        std::cout << "[GOP] State: lastRefSlot=" << lastRefSlotIndex 
+                  << ", lastRefFrameNum=" << lastRefFrameNum 
+                  << ", lastRefPOC=" << lastRefPicOrderCnt << std::endl;
+        
         bool isIDR = isNextFrameIDR();
-        int32_t slotIndex = 0;  // Use slot 0 for I-frame only encoding
+        bool isP = isPFrame();
+        
+        std::cout << "[GOP] Frame type determined: IDR=" << isIDR << ", P=" << isP 
+                  << " => " << (isIDR ? "IDR" : (isP ? "P-frame" : "I-frame")) << std::endl;
+        
+        // Determine DPB slot for current reconstructed frame
+        // For P-frames, use ping-pong between slot 0 and 1
+        int32_t slotIndex = (config.gopSize > 1) ? static_cast<int32_t>(frameCounter % 2) : 0;
+        std::cout << "[GOP] Using DPB slot: " << slotIndex << std::endl;
         
         // DPB slot reference
         DPBSlot& dpbSlot = dpbSlots[slotIndex];
@@ -2041,13 +2075,26 @@ private:
         sliceHeader.flags.direct_spatial_mv_pred_flag = 0;
         sliceHeader.flags.num_ref_idx_active_override_flag = 0;
         sliceHeader.first_mb_in_slice = 0;  // First macroblock
-        sliceHeader.slice_type = STD_VIDEO_H264_SLICE_TYPE_I;  // Always I slice
+        sliceHeader.slice_type = isP ? STD_VIDEO_H264_SLICE_TYPE_P : STD_VIDEO_H264_SLICE_TYPE_I;
         sliceHeader.slice_alpha_c0_offset_div2 = 0;
         sliceHeader.slice_beta_offset_div2 = 0;
         sliceHeader.slice_qp_delta = 0;
         // cabac_init_idc is ignored when entropy_coding_mode_flag is 0 (CAVLC)
         sliceHeader.cabac_init_idc = STD_VIDEO_H264_CABAC_INIT_IDC_0;
         sliceHeader.disable_deblocking_filter_idc = STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED;
+        
+        std::cout << "[GOP] Slice type: " << (int)sliceHeader.slice_type <<"\n                  << (" << (isP ? "P" : "I") << "-slice)" << std::endl;        
+        // Build reference lists for P-frames
+        StdVideoEncodeH264ReferenceListsInfo refLists = {};
+        uint8_t refPicList0[STD_VIDEO_H264_MAX_NUM_LIST_REF] = {};
+        if (isP && lastRefSlotIndex >= 0) {
+            refLists.RefPicList0[0] = static_cast<uint8_t>(lastRefSlotIndex);  // DPB slot index of reference frame
+            refLists.num_ref_idx_l0_active_minus1 = 0;  // 1 reference in L0
+            refLists.num_ref_idx_l1_active_minus1 = 0;
+            std::cout << "[GOP] Building reference list: L0[0]=" << (int)refLists.RefPicList0[0] << ", num_ref_l0=1" << std::endl;
+        } else {
+            std::cout << "[GOP] No reference list (I-frame or no previous ref)" << std::endl;
+        }
         
         StdVideoEncodeH264PictureInfo stdPicInfo = {};
         stdPicInfo.flags.IdrPicFlag = isIDR ? 1 : 0;
@@ -2058,15 +2105,18 @@ private:
         stdPicInfo.seq_parameter_set_id = 0;
         stdPicInfo.pic_parameter_set_id = 0;
         stdPicInfo.idr_pic_id = isIDR ? idrPicId++ : 0;
-        // For IDR frames, primary_pic_type must be IDR; for I-frames use I
-        stdPicInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : STD_VIDEO_H264_PICTURE_TYPE_I;
+        // For IDR frames, primary_pic_type must be IDR; for P-frames use P; for I-frames use I
+        stdPicInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : (isP ? STD_VIDEO_H264_PICTURE_TYPE_P : STD_VIDEO_H264_PICTURE_TYPE_I);
         // For IDR frames, frame_num should be 0 since IDR resets the DPB
         stdPicInfo.frame_num = isIDR ? 0 : static_cast<uint32_t>(frameCounter % 256);
         // For POC type 0, PicOrderCnt should wrap around at max_pic_order_cnt_lsb (256)
         // For IDR frames, POC starts at 0
         stdPicInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((frameCounter * 2) % 256);
         stdPicInfo.temporal_id = 0;
-        stdPicInfo.pRefLists = nullptr;  // No reference lists for I-frames
+        stdPicInfo.pRefLists = (isP && lastRefSlotIndex >= 0) ? &refLists : nullptr;
+        
+        std::cout << "[GOP] Picture info: IdrFlag=" << (int)stdPicInfo.flags.IdrPicFlag << ", primary_pic_type=" << (int)stdPicInfo.primary_pic_type                   << ", frame_num=" << stdPicInfo.frame_num
+                          << ", POC=" << stdPicInfo.PicOrderCnt                  << ", pRefLists=" << (stdPicInfo.pRefLists ? "SET" : "NULL") << std::endl;
         
         // H.264 NALU slice info
         VkVideoEncodeH264NaluSliceInfoKHR sliceInfo = {
@@ -2096,11 +2146,11 @@ private:
             .imageViewBinding = dpbSlot.view,
         };
         
-        // H.264 DPB slot info
+        // H.264 DPB slot info for current reconstructed frame
         StdVideoEncodeH264ReferenceInfo stdRefInfo = {};
         stdRefInfo.flags.used_for_long_term_reference = 0;
         // Reference info should match the picture type
-        stdRefInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : STD_VIDEO_H264_PICTURE_TYPE_I;
+        stdRefInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : (isP ? STD_VIDEO_H264_PICTURE_TYPE_P : STD_VIDEO_H264_PICTURE_TYPE_I);
         // For IDR frames, frame_num is 0; POC also starts at 0
         stdRefInfo.FrameNum = isIDR ? 0 : static_cast<uint32_t>(frameCounter % 256);
         stdRefInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((frameCounter * 2) % 256);
@@ -2132,6 +2182,54 @@ private:
             .imageViewBinding = srcView,  // Use NV12 image view as source
         };
         
+        // Setup input reference for P-frames
+        VkVideoPictureResourceInfoKHR refPicResource = {};
+        StdVideoEncodeH264ReferenceInfo refStdInfo = {};
+        VkVideoEncodeH264DpbSlotInfoKHR refH264DpbSlotInfo = {};
+        VkVideoReferenceSlotInfoKHR inputRefSlot = {};
+        
+        if (isP && lastRefSlotIndex >= 0) {
+            std::cout << "[GOP] Setting up input reference from DPB slot " << lastRefSlotIndex << std::endl;            // Get the reference DPB slot
+            DPBSlot& refSlot = dpbSlots[lastRefSlotIndex];
+            
+            // Reference picture resource
+            refPicResource = {
+                .sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
+                .pNext = nullptr,
+                .codedOffset = { 0, 0 },
+                .codedExtent = { config.width, config.height },
+                .baseArrayLayer = 0,
+                .imageViewBinding = refSlot.view,
+            };
+            
+            // Reference frame info
+            refStdInfo.flags.used_for_long_term_reference = 0;
+            refStdInfo.primary_pic_type = STD_VIDEO_H264_PICTURE_TYPE_P;  // Previous frame was also P (or I)
+            refStdInfo.FrameNum = lastRefFrameNum;
+            refStdInfo.PicOrderCnt = lastRefPicOrderCnt;
+            refStdInfo.long_term_pic_num = 0;
+            refStdInfo.long_term_frame_idx = 0;
+            refStdInfo.temporal_id = 0;
+            
+            std::cout << "[GOP] Input ref: FrameNum=" << refStdInfo.FrameNum                      << ", POC=" << refStdInfo.PicOrderCnt << std::endl;            
+            refH264DpbSlotInfo = {
+                .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
+                .pNext = nullptr,
+                .pStdReferenceInfo = &refStdInfo,
+            };
+            
+            // Input reference slot
+            inputRefSlot = {
+                .sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+                .pNext = &refH264DpbSlotInfo,
+                .slotIndex = lastRefSlotIndex,
+                .pPictureResource = &refPicResource,
+            };
+        } else {
+            std::cout << "[GOP] No input reference (isP=" << isP << ", lastRefSlot=" << lastRefSlotIndex << ")" <<
+                std::endl;
+        }
+        
         // Encode info
         VkVideoEncodeInfoKHR encodeInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR,
@@ -2142,14 +2240,27 @@ private:
             .dstBufferRange = bitstreamBufferSize,
             .srcPictureResource = srcPicResource,
             .pSetupReferenceSlot = &setupSlot,
-            .referenceSlotCount = 0,
-            .pReferenceSlots = nullptr,
+            .referenceSlotCount = (isP && lastRefSlotIndex >= 0) ? 1u : 0u,
+            .pReferenceSlots = (isP && lastRefSlotIndex >= 0) ? &inputRefSlot : nullptr,
             .precedingExternallyEncodedBytes = 0,
         };
         
-        // For IDR, include reference slot in begin coding
-        VkVideoReferenceSlotInfoKHR beginSlot = setupSlot;
-        beginSlot.slotIndex = -1;  // Mark as not yet assigned
+        // Setup reference slots for begin coding
+        // For P-frames, we need to include both input reference and output setup slots
+        // For I-frames/IDR, we only need a placeholder for tracking
+        std::array<VkVideoReferenceSlotInfoKHR, 2> beginSlots;
+        uint32_t beginSlotCount = 0;
+        
+        if (isP && lastRefSlotIndex >= 0) {
+            // P-frame: Include input reference slot
+            beginSlots[beginSlotCount++] = inputRefSlot;
+            std::cout << "[GOP] Begin coding: including input ref slot " << lastRefSlotIndex << std::endl;
+        }
+        
+        // Always include a placeholder for tracking (will be assigned during encode)
+        VkVideoReferenceSlotInfoKHR placeholderSlot = setupSlot;
+        placeholderSlot.slotIndex = -1;  // Mark as not yet assigned
+        beginSlots[beginSlotCount++] = placeholderSlot;
         
         // Reset query pool before beginning video coding (must be outside video coding scope)
         vkCmdResetQueryPool(cmdBuffer, queryPool, 0, 1);
@@ -2175,9 +2286,11 @@ private:
             .flags = 0,
             .videoSession = videoSession,
             .videoSessionParameters = sessionParams,
-            .referenceSlotCount = 1,
-            .pReferenceSlots = &beginSlot,
+            .referenceSlotCount = beginSlotCount,
+            .pReferenceSlots = beginSlots.data(),
         };
+        
+        std::cout << "[GOP] Begin coding with " << beginSlotCount << " reference slot(s)" << std::endl;
         
         fp_vkCmdBeginVideoCodingKHR(cmdBuffer, &beginInfo);
         
@@ -2215,6 +2328,16 @@ private:
         // End query
         vkCmdEndQuery(cmdBuffer, queryPool, 0);
         std::cout << "[Encode] Query ended" << std::endl;
+        
+        // Update reference tracking for next P-frame
+        // Store current frame as reference for next frame
+        lastRefSlotIndex = slotIndex;
+        lastRefFrameNum = stdPicInfo.frame_num;
+        lastRefPicOrderCnt = stdPicInfo.PicOrderCnt;
+
+        std::cout << "[GOP] Updated reference tracking: slot=" << lastRefSlotIndex << ", frameNum=" << lastRefFrameNum
+            << ", POC=" << lastRefPicOrderCnt << std::endl;
+        std::cout << "========== END ENCODE FRAME " << frameCounter << " ==========" << std::endl;
         
         // End video coding
         VkVideoEndCodingInfoKHR endInfo = {
@@ -2689,7 +2812,7 @@ public:
 		encoderConfig.width = width;
 		encoderConfig.height = height;
 		encoderConfig.frameRate = 60;
-		encoderConfig.gopSize = 1;  // All I-frames
+		encoderConfig.gopSize = 60;  // All I-frames
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
 
