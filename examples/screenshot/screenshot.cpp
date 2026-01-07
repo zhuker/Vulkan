@@ -96,7 +96,7 @@ public:
         std::vector<VkFormat> formatsBGR = { 
             VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SNORM 
         };
-        needsSwizzle = (std::find(formatsBGR.begin(), formatsBGR.end(), swapchainFormat) != formatsBGR.end());
+        needsSwizzle = (std::find(formatsBGR.begin(), formatsBGR.end(), swapchainFormat) == formatsBGR.end());
 
         // Create swapchain image views for compute shader input
         if (!createSwapchainImageViews(swapchainImages, swapchainFormat)) {
@@ -2233,9 +2233,9 @@ public:
 	vkglTF::Model model;
 
 	struct UniformData {
-		glm::mat4 projection;
-		glm::mat4 model;
-		glm::mat4 view;
+		glm::mat4 projection{};
+		glm::mat4 model{};
+		glm::mat4 view{};
 		int32_t texIndex = 0;
 	} uniformData;
 	std::array<vks::Buffer, maxConcurrentFrames> uniformBuffers;
