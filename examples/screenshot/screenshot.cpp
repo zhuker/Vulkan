@@ -13,6 +13,7 @@
 #include <fstream>
 #include <thread>
 #include <chrono>
+#include <atomic>
 
 // RGB to NV12 Color Conversion Pipeline
 // Uses a compute shader to convert RGB swapchain images to NV12 format for video encoding
@@ -982,6 +983,10 @@ private:
     uint32_t lastRefFrameNum = 0;       // frame_num of last reference
     int32_t lastRefPicOrderCnt = 0;     // PicOrderCnt of last reference
     StdVideoH264PictureType lastRefPicType = STD_VIDEO_H264_PICTURE_TYPE_IDR;  // Picture type of last reference
+
+    // User-triggered keyframe (IDR) request flag and current frame type tracking
+    std::atomic<bool> forceIDRRequested{false};
+    bool currentFrameIsIDR{false};
     
     // Configuration
     EncoderConfig config{};
@@ -1044,6 +1049,16 @@ public:
         
         isInitialized = true;
         return true;
+    }
+
+    // Request a one-off IDR on the next frame. No-op if gopSize==1.
+    void requestKeyframe() {
+        if (config.gopSize > 1) {
+            forceIDRRequested.store(true);
+            std::cout << "[GOP] User requested IDR for next frame" << std::endl;
+        } else {
+            std::cout << "[GOP] User requested IDR, but gopSize==1 (noop)" << std::endl;
+        }
     }
     
     // Check if H264 encoding is supported
@@ -1725,8 +1740,8 @@ public:
         // Write encoded data to file using 32-bit values
         if (result == VK_SUCCESS && fb32->bytesWritten > 0 && bitstreamMappedPtr) {
             // For IDR frames, ensure SPS/PPS is written first
-            // This makes the stream self-contained and decodable from any IDR
-            bool isIDR = (frameCounter == 0) || (config.gopSize > 0 && (frameCounter % config.gopSize == 0));
+            // Use the decided frame type from command recording
+            bool isIDR = currentFrameIsIDR;
             if (isIDR && !spsPpsWritten) {
                 writeSpsPps();
             }
@@ -1980,8 +1995,14 @@ private:
                   << ", lastRefFrameNum=" << lastRefFrameNum 
                   << ", lastRefPOC=" << lastRefPicOrderCnt << std::endl;
         
-        bool isIDR = isNextFrameIDR();
-        bool isP = isPFrame();
+        // Apply forced IDR request if present (additional to periodic GOP keyframes)
+        bool forcedIDR = forceIDRRequested.exchange(false) && (config.gopSize > 1);
+        if (forcedIDR) {
+            std::cout << "[GOP] Forcing IDR for this frame per user request" << std::endl;
+        }
+        bool isIDR = forcedIDR || isNextFrameIDR();
+        currentFrameIsIDR = isIDR;
+        bool isP = (config.gopSize > 1) && !isIDR && frameCounter > 0;
         
         std::cout << "[GOP] Frame type determined: IDR=" << isIDR << ", P=" << isP 
                   << " => " << (isIDR ? "IDR" : (isP ? "P-frame" : "I-frame")) << std::endl;
@@ -3079,6 +3100,10 @@ public:
 						std::cout << "Recording stopped. Encoded " << encodedFrameCount << " frames." << std::endl;
 					}
 				}
+                // Force a one-off IDR on next frame
+                if (overlay->button("Force I-Frame")) {
+                    h264Encoder.requestKeyframe();
+                }
 				if (recordingEnabled) {
 					overlay->text("Recording: %lu frames", encodedFrameCount);
 				}
