@@ -14,6 +14,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <cmath>
 
 // RGB to NV12 Color Conversion Pipeline
 // Uses a compute shader to convert RGB swapchain images to NV12 format for video encoding
@@ -937,6 +938,7 @@ private:
     
     // Encode state
     bool sessionReset = false;
+    uint32_t currentAppliedBitrate = 0;
     bool spsPpsWritten = false;  // Track if SPS/PPS has been written to file
     VkCommandBuffer encodeCommandBuffer = VK_NULL_HANDLE;
     VkFence encodeFence = VK_NULL_HANDLE;
@@ -977,7 +979,12 @@ private:
     VkQueryPool queryPool = VK_NULL_HANDLE;
     
     // Frame state
-    uint64_t frameCounter = 0;
+    // A sequential counter used in H.264 to identify frames in decoding order.
+    // Resets to 0 for IDR frames (spec requirement: IDR frames reinitialize the DPB)
+    // Increments by 1 for each subsequent frame
+    uint64_t decodingOrderFrameNum = 0;
+    // A sequential counter of frames encoded never resets, used to identify frames in display order.
+    uint64_t streamFrameNum = 0;
     uint64_t lastIDRFrame = 0;
     uint16_t idrPicId = 0;
     
@@ -1447,14 +1454,40 @@ public:
     // Check if SPS/PPS has been written
     bool isSpsPpsWritten() const { return spsPpsWritten; }
     
-    // Get current frame number
-    uint64_t getFrameCount() const { return frameCounter; }
+    uint32_t getCurrentBitrate0() const {
+        if (!config.useVBR) return 0;
+        
+        // Dynamic bitrate modification demo
+        // Vary bitrate based on frame counter
+        double factor = (std::sin(static_cast<double>(streamFrameNum) * 0.05) + 1.0) * 0.5; // 0.0 to 1.0
+        
+        // Interpolate between 50% average and max*2
+        uint32_t minRate = config.averageBitrate / 2;
+        uint32_t range = (config.maxBitrate * 2) - minRate;
+        auto bitrateRequest = minRate + static_cast<uint32_t>(range * factor);
+        std::cout << "[Bitrate] Frame " << streamFrameNum << ": Requesting bitrate " << bitrateRequest 
+                  << " bps (factor=" << factor << ")" << std::endl;
+        return bitrateRequest;
+    }
+
+    std::pair<uint32_t, uint32_t> getCurrentBitrate() const {
+        if (!config.useVBR) return {0, 0};
+
+        if (streamFrameNum < 400) {
+            std::cout << "[Bitrate] Frame " << streamFrameNum << ": Requesting bitrate " << config.averageBitrate
+                << std::endl;
+            return {config.averageBitrate, config.averageBitrate};
+        }
+        std::cout << "[Bitrate] Frame " << streamFrameNum << ": Requesting bitrate " << config.averageBitrate * 2
+            << std::endl;
+        return {config.averageBitrate * 2, config.maxBitrate * 2};
+    }
     
     // Check if next frame should be IDR
     bool isNextFrameIDR() const {
-        bool result = (frameCounter == 0) || (config.gopSize > 0 && (frameCounter % config.gopSize == 0));
-        std::cout << "[GOP] Frame " << frameCounter << ": isNextFrameIDR = " << result 
-                  << " (gopSize=" << config.gopSize << ", mod=" << (frameCounter % config.gopSize) << ")" << std::endl;
+        bool result = (decodingOrderFrameNum == 0) || (config.gopSize > 0 && (decodingOrderFrameNum % config.gopSize == 0));
+        std::cout << "[GOP] Frame " << decodingOrderFrameNum << ": isNextFrameIDR = " << result 
+                  << " (gopSize=" << config.gopSize << ", mod=" << (decodingOrderFrameNum % config.gopSize) << ")" << std::endl;
         return result;
     }
     
@@ -1619,8 +1652,8 @@ public:
                      VkQueue graphicsQueue, VkSemaphore waitSemaphore = VK_NULL_HANDLE,
                      uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
         if (!isReady()) return false;
-        
-        std::cout << "[Encode] Starting frame " << frameCounter << std::endl;
+
+        std::cout << "[Encode] Starting frame " << decodingOrderFrameNum << "/" << streamFrameNum << std::endl;
         
         // Wait for previous encode to complete
         std::cout << "[Encode] Waiting for previous encode fence..." << std::endl;
@@ -1757,7 +1790,8 @@ public:
             writeNALUnit(data, static_cast<size_t>(fb32->bytesWritten));
         }
         
-        frameCounter++;
+        decodingOrderFrameNum++;
+        streamFrameNum++;
         return result == VK_SUCCESS;
     }
     
@@ -1854,10 +1888,10 @@ private:
     // Helper to determine if current frame should be encoded as P-frame
     bool isPFrame() const {
         bool notIDR = !isNextFrameIDR();
-        bool result = config.gopSize > 1 && notIDR && frameCounter > 0;
-        std::cout << "[GOP] Frame " << frameCounter << ": isPFrame = " << result 
+        bool result = config.gopSize > 1 && notIDR && decodingOrderFrameNum > 0;
+        std::cout << "[GOP] Frame " << decodingOrderFrameNum << ": isPFrame = " << result 
                   << " (gopSize>1: " << (config.gopSize > 1) << ", notIDR: " << notIDR 
-                  << ", frameCounter>0: " << (frameCounter > 0) 
+                  << ", frameCounter>0: " << (decodingOrderFrameNum > 0) 
                   << ", lastRefSlot: " << lastRefSlotIndex << ")" << std::endl;
         return result;
     }
@@ -1992,7 +2026,8 @@ private:
     // If srcQueueFamily differs from video queue family, we need to acquire ownership
     void recordEncodeCommands(VkCommandBuffer cmdBuffer, VkImage srcImage, VkImageView srcView,
                               uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
-        std::cout << "\n========== ENCODE FRAME " << frameCounter << " ==========" << std::endl;
+        std::cout << "\n========== ENCODE FRAME " << decodingOrderFrameNum << "/" << streamFrameNum << " ==========" <<
+            std::endl;
         std::cout << "[GOP] Config: gopSize=" << config.gopSize << ", qp=" << config.qp << std::endl;
         std::cout << "[GOP] State: lastRefSlot=" << lastRefSlotIndex 
                   << ", lastRefFrameNum=" << lastRefFrameNum 
@@ -2005,14 +2040,14 @@ private:
         }
         bool isIDR = forcedIDR || isNextFrameIDR();
         currentFrameIsIDR = isIDR;
-        bool isP = (config.gopSize > 1) && !isIDR && frameCounter > 0;
+        bool isP = (config.gopSize > 1) && !isIDR && decodingOrderFrameNum > 0;
         
         std::cout << "[GOP] Frame type determined: IDR=" << isIDR << ", P=" << isP 
                   << " => " << (isIDR ? "IDR" : (isP ? "P-frame" : "I-frame")) << std::endl;
         
         // Determine DPB slot for current reconstructed frame
         // For P-frames, use ping-pong between slot 0 and 1
-        int32_t slotIndex = (config.gopSize > 1) ? static_cast<int32_t>(frameCounter % 2) : 0;
+        int32_t slotIndex = (config.gopSize > 1) ? static_cast<int32_t>(decodingOrderFrameNum % 2) : 0;
         std::cout << "[GOP] Using DPB slot: " << slotIndex << std::endl;
         
         // DPB slot reference
@@ -2179,14 +2214,39 @@ private:
         stdPicInfo.idr_pic_id = isIDR ? idrPicId++ : 0;
         // For IDR frames, primary_pic_type must be IDR; for P-frames use P; for I-frames use I
         stdPicInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : (isP ? STD_VIDEO_H264_PICTURE_TYPE_P : STD_VIDEO_H264_PICTURE_TYPE_I);
+        /*
+        * Frame Numbering and Picture Order Count (POC):
+        * 
+        * frame_num: A sequential counter used in H.264 to identify frames in decoding order.
+        * - Resets to 0 for IDR frames (spec requirement: IDR frames reinitialize the DPB)
+        * - Increments by 1 for each subsequent frame
+        * - Wraps around at 256 (modulo operation) because frame_num is transmitted in the bitstream
+        *   using log2_max_frame_num_minus4, which with our SPS setting yields a maximum of 256
+        * - This wrapping is essential for bitstream compactness and decoder compatibility
+        * 
+        * PicOrderCnt (POC): Defines the display order of frames for proper temporal sequencing.
+        * - For POC type 0 (used in this implementation), POC is derived from frame count
+        * - Resets to 0 for IDR frames (part of IDR semantics - new sequence starts)
+        * - Calculated as (frameCounter * 2) to allow for potential field coding support
+        * - Wraps around at 256 due to log2_max_pic_order_cnt_lsb_minus4 setting in SPS
+        * - The modulo 256 operation prevents POC from exceeding max_pic_order_cnt_lsb
+        * - POC wrapping is mandated by H.264 spec and ensures decoder can correctly compute
+        *   display ordering even with the limited bit width used in the bitstream
+        * 
+        * The 256 wrap value comes from: 2^(log2_max_frame_num_minus4 + 4) where
+        * log2_max_frame_num_minus4 = 4 in our SPS configuration, giving 2^8 = 256.
+        * 
+        * Both values MUST wrap at the same boundary to maintain synchronization between
+        * decoding order (frame_num) and display order (POC) in the H.264 bitstream.
+        */
         // For IDR frames, frame_num should be 0 since IDR resets the DPB
-        stdPicInfo.frame_num = isIDR ? 0 : static_cast<uint32_t>(frameCounter % 256);
+        stdPicInfo.frame_num = isIDR ? 0 : static_cast<uint32_t>(decodingOrderFrameNum % 256);
         // For POC type 0, PicOrderCnt should wrap around at max_pic_order_cnt_lsb (256)
         // For IDR frames, POC starts at 0
-        stdPicInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((frameCounter * 2) % 256);
+        stdPicInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((decodingOrderFrameNum * 2) % 256);
         if (isIDR) {
-            // if stdPicInfo.frame_num is not set correctly ffplay ignores or skips frames randly 
-            frameCounter = 0;  // Reset frame counter after IDR for consistent POC
+            // if stdPicInfo.frame_num is not set correctly ffplay ignores or skips frames randomly
+            decodingOrderFrameNum = 0;  // Reset frame counter after IDR for consistent POC
         }
         stdPicInfo.temporal_id = 0;
         stdPicInfo.pRefLists = (isP && lastRefSlotIndex >= 0) ? &refLists : nullptr;
@@ -2228,8 +2288,8 @@ private:
         // Reference info should match the picture type
         stdRefInfo.primary_pic_type = isIDR ? STD_VIDEO_H264_PICTURE_TYPE_IDR : (isP ? STD_VIDEO_H264_PICTURE_TYPE_P : STD_VIDEO_H264_PICTURE_TYPE_I);
         // For IDR frames, frame_num is 0; POC also starts at 0
-        stdRefInfo.FrameNum = isIDR ? 0 : static_cast<uint32_t>(frameCounter % 256);
-        stdRefInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((frameCounter * 2) % 256);
+        stdRefInfo.FrameNum = isIDR ? 0 : static_cast<uint32_t>(decodingOrderFrameNum % 256);
+        stdRefInfo.PicOrderCnt = isIDR ? 0 : static_cast<int32_t>((decodingOrderFrameNum * 2) % 256);
         stdRefInfo.long_term_pic_num = 0;
         stdRefInfo.long_term_frame_idx = 0;
         stdRefInfo.temporal_id = 0;
@@ -2355,14 +2415,26 @@ private:
             .maxFrameSize = {0, 0, 0},
         };
 
+        const auto [avgBitrate, maxBitrate] = getCurrentBitrate();
         VkVideoEncodeRateControlLayerInfoKHR rateControlLayerInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_LAYER_INFO_KHR,
             .pNext = &h264RateControlLayer,
-            .averageBitrate = config.averageBitrate,
-            .maxBitrate = config.maxBitrate,
+            .averageBitrate = avgBitrate,
+            .maxBitrate = maxBitrate,
             .frameRateNumerator = (config.maxFrameRate > 0) ? config.maxFrameRate : 60,
             .frameRateDenominator = 1,
         };
+
+        if (config.useVBR) {
+            uint32_t currentRate = rateControlLayerInfo.averageBitrate;
+            if (currentRate != currentAppliedBitrate) {
+                // If it's a new bitrate, we just log here. 
+                // We'll apply it using vkCmdControlVideoCodingKHR inside the coding scope.
+                if (sessionReset) {
+                    std::cout << "[Encode] VBR Bitrate Update Detected: " << currentRate << " bps" << std::endl;
+                }
+            }
+        }
 
         // Determine Rate Control Mode
         VkVideoEncodeRateControlModeFlagBitsKHR rcMode = config.useVBR 
@@ -2421,7 +2493,19 @@ private:
             };
             fp_vkCmdControlVideoCodingKHR(cmdBuffer, &controlInfo);
             
+            currentAppliedBitrate = rateControlLayerInfo.averageBitrate;
             sessionReset = true;
+        } else if (config.useVBR && rateControlLayerInfo.averageBitrate != currentAppliedBitrate) {
+            // Bitrate changed in an active session - update rate control
+            VkVideoCodingControlInfoKHR controlInfo = {
+                .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
+                .pNext = &rateControlInfo,
+                .flags = VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR,
+            };
+            fp_vkCmdControlVideoCodingKHR(cmdBuffer, &controlInfo);
+            
+            std::cout << "[Encode] VBR Bitrate Updated to " << rateControlLayerInfo.averageBitrate << " bps" << std::endl;
+            currentAppliedBitrate = rateControlLayerInfo.averageBitrate;
         }
         
         // Begin query - use index 0
@@ -2447,7 +2531,8 @@ private:
 
         std::cout << "[GOP] Updated reference tracking: slot=" << lastRefSlotIndex << ", frameNum=" << lastRefFrameNum
             << ", POC=" << lastRefPicOrderCnt << ", picType=" << (int)lastRefPicType << std::endl;
-        std::cout << "========== END ENCODE FRAME " << frameCounter << " ==========" << std::endl;
+        std::cout << "========== END ENCODE FRAME " << decodingOrderFrameNum << "/" << streamFrameNum << " =========="
+            << std::endl;
         
         // End video coding
         VkVideoEndCodingInfoKHR endInfo = {
@@ -2929,8 +3014,8 @@ public:
 		
 		// VBR Configuration
 		encoderConfig.useVBR = true;
-		encoderConfig.averageBitrate = 2000000; // 2 Mbps
-		encoderConfig.maxBitrate = 3000000;     // 3 Mbps
+		encoderConfig.averageBitrate = 1000000; // 1 Mbps
+		encoderConfig.maxBitrate = 1000000;     // 1 Mbps
 
 		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
 			std::cerr << "Failed to initialize H264 encoder" << std::endl;
