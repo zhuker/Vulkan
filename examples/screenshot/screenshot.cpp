@@ -892,6 +892,9 @@ public:
         uint32_t qp = 23;            // Constant QP for CQP rate control
         uint32_t maxFrameRate = 0;   // Max frame rate limiter (0 = unlimited)
         std::string outputPath = "recording.h264";
+        bool useVBR = false;         // Enable VBR rate control
+        uint32_t averageBitrate = 0; // Average bitrate (bits/s)
+        uint32_t maxBitrate = 0;     // Max bitrate (bits/s)
     };
 
     // Per-frame encoding state
@@ -2195,7 +2198,7 @@ private:
         VkVideoEncodeH264NaluSliceInfoKHR sliceInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_NALU_SLICE_INFO_KHR,
             .pNext = nullptr,
-            .constantQp = static_cast<int32_t>(config.qp),
+            .constantQp = config.useVBR ? 0 : static_cast<int32_t>(config.qp),
             .pStdSliceHeader = &sliceHeader,
         };
         
@@ -2332,29 +2335,67 @@ private:
             std::cout << "[GOP] Begin coding: including input ref slot " << lastRefSlotIndex << std::endl;
         }
         
-        // Always include a placeholder for tracking (will be assigned during encode)
-        VkVideoReferenceSlotInfoKHR placeholderSlot = setupSlot;
-        placeholderSlot.slotIndex = -1;  // Mark as not yet assigned
-        beginSlots[beginSlotCount++] = placeholderSlot;
+        // Output/Setup slot MUST be included in the bound reference slots so validation passes
+        // Error 08215: pEncodeInfo->pSetupReferenceSlot->pPictureResource must match one of the bound reference picture resource
+        beginSlots[beginSlotCount++] = setupSlot;
         
         // Reset query pool before beginning video coding (must be outside video coding scope)
         vkCmdResetQueryPool(cmdBuffer, queryPool, 0, 1);
         
-        // Rate control info for DISABLED mode (constant QP)
+        // Rate Control Layer Info (for VBR)
+        // We must provide H.264 specific rate control layer info
+        VkVideoEncodeH264RateControlLayerInfoKHR h264RateControlLayer = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_RATE_CONTROL_LAYER_INFO_KHR,
+            .pNext = nullptr,
+            .useMinQp = VK_FALSE,
+            .minQp = {0, 0, 0},
+            .useMaxQp = VK_FALSE,
+            .maxQp = {51, 51, 51},
+            .useMaxFrameSize = VK_FALSE,
+            .maxFrameSize = {0, 0, 0},
+        };
+
+        VkVideoEncodeRateControlLayerInfoKHR rateControlLayerInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_LAYER_INFO_KHR,
+            .pNext = &h264RateControlLayer,
+            .averageBitrate = config.averageBitrate,
+            .maxBitrate = config.maxBitrate,
+            .frameRateNumerator = (config.maxFrameRate > 0) ? config.maxFrameRate : 60,
+            .frameRateDenominator = 1,
+        };
+
+        // Determine Rate Control Mode
+        VkVideoEncodeRateControlModeFlagBitsKHR rcMode = config.useVBR 
+            ? VK_VIDEO_ENCODE_RATE_CONTROL_MODE_VBR_BIT_KHR 
+            : VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR;
+
+        // Rate control info
+        // We must also provide H.264 specific rate control info in the pNext chain
+        VkVideoEncodeH264RateControlInfoKHR h264RateControlInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_RATE_CONTROL_INFO_KHR,
+            .pNext = nullptr,
+            .flags = VK_VIDEO_ENCODE_H264_RATE_CONTROL_REGULAR_GOP_BIT_KHR | 
+                     VK_VIDEO_ENCODE_H264_RATE_CONTROL_REFERENCE_PATTERN_FLAT_BIT_KHR,
+            .gopFrameCount = config.gopSize,
+            .idrPeriod = config.gopSize,
+            .consecutiveBFrameCount = 0,
+            .temporalLayerCount = (config.useVBR ? 1u : 0u), // Must be non-zero if VBR
+        };
+
         VkVideoEncodeRateControlInfoKHR rateControlInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR,
-            .pNext = nullptr,
+            .pNext = &h264RateControlInfo,
             .flags = 0,
-            .rateControlMode = VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR,
-            .layerCount = 0,
-            .pLayers = nullptr,
-            .virtualBufferSizeInMs = 0,
-            .initialVirtualBufferSizeInMs = 0,
+            .rateControlMode = rcMode,
+            .layerCount = config.useVBR ? 1u : 0u,
+            .pLayers = config.useVBR ? &rateControlLayerInfo : nullptr,
+            .virtualBufferSizeInMs = config.useVBR ? 1000u : 0u, // Set leaky bucket size for VBR
+            .initialVirtualBufferSizeInMs = config.useVBR ? 1000u : 0u,
         };
         
         // Begin video coding
         // - First frame: Don't include rate control (it's still DEFAULT)
-        // - Subsequent frames: Include rate control matching current state (DISABLED)
+        // - Subsequent frames: Include rate control matching current state
         VkVideoBeginCodingInfoKHR beginInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
             .pNext = sessionReset ? &rateControlInfo : nullptr,  // Only after rate control is configured
@@ -2371,21 +2412,14 @@ private:
         
         // Reset session and configure rate control on first frame
         if (!sessionReset) {
-            // First reset the session
+            // Apply reset and rate control in one command
+            // Note: RESET is performed before processing other flags
             VkVideoCodingControlInfoKHR controlInfo = {
                 .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
-                .pNext = nullptr,
-                .flags = VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR,
+                .pNext = &rateControlInfo,
+                .flags = VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR | VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR,
             };
             fp_vkCmdControlVideoCodingKHR(cmdBuffer, &controlInfo);
-            
-            // Then set rate control mode to DISABLED for constant QP encoding
-            VkVideoCodingControlInfoKHR rateControlCommand = {
-                .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
-                .pNext = &rateControlInfo,
-                .flags = VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR,
-            };
-            fp_vkCmdControlVideoCodingKHR(cmdBuffer, &rateControlCommand);
             
             sessionReset = true;
         }
@@ -2888,10 +2922,15 @@ public:
 		VulkanH264Encoder::EncoderConfig encoderConfig;
 		encoderConfig.width = width;
 		encoderConfig.height = height;
-		encoderConfig.gopSize = 80;  // All I-frames
+		encoderConfig.gopSize = 360;  // All I-frames
 	    encoderConfig.maxFrameRate = 60;
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
+		
+		// VBR Configuration
+		encoderConfig.useVBR = true;
+		encoderConfig.averageBitrate = 2000000; // 2 Mbps
+		encoderConfig.maxBitrate = 3000000;     // 3 Mbps
 
 		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
 			std::cerr << "Failed to initialize H264 encoder" << std::endl;
