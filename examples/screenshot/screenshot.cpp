@@ -889,6 +889,7 @@ public:
         uint32_t height = 0;
         uint32_t gopSize = 60;       // GOP size: 60 frames = 1 second at 60fps (I+P frames)
         uint32_t qp = 23;            // Constant QP for CQP rate control
+        uint32_t maxFrameRate = 0;   // Max frame rate limiter (0 = unlimited)
         std::string outputPath = "recording.h264";
     };
 
@@ -2429,6 +2430,7 @@ public:
 	bool screenshotSaved{ false };
 	bool recordingEnabled{ false };
 	uint64_t encodedFrameCount{ 0 };
+	std::chrono::steady_clock::time_point lastEncodeTime{};
 
 	// Video encoding resources
 	RGBtoNV12Converter rgbToNv12Converter;
@@ -2866,6 +2868,7 @@ public:
 		encoderConfig.width = width;
 		encoderConfig.height = height;
 		encoderConfig.gopSize = 80;  // All I-frames
+	    encoderConfig.maxFrameRate = 60;
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
 
@@ -2980,6 +2983,23 @@ public:
 	// Encode the current frame to H.264
 	void encodeCurrentFrame()
 	{
+		// Check frame rate limiter
+		const auto& config = h264Encoder.getConfig();
+		if (config.maxFrameRate > 0) {
+			auto now = std::chrono::steady_clock::now();
+			// Skip the first frame check (lastEncodeTime is default initialized)
+			if (lastEncodeTime != std::chrono::steady_clock::time_point{}) {
+				auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastEncodeTime);
+				auto minInterval = std::chrono::milliseconds(1000 / config.maxFrameRate);
+				if (elapsed < minInterval) {
+					std::cout << "[Frame] Skipping frame (rate limit: " << elapsed.count() 
+					          << "ms < " << minInterval.count() << "ms)" << std::endl;
+					return;
+				}
+			}
+			lastEncodeTime = now;
+		}
+		
 		std::cout << "[Frame] Starting encode of frame " << encodedFrameCount << std::endl;
 		
 		// Wait for previous color conversion to complete
