@@ -925,6 +925,7 @@ private:
     PFN_vkCreateVideoSessionParametersKHR fp_vkCreateVideoSessionParametersKHR = nullptr;
     PFN_vkDestroyVideoSessionParametersKHR fp_vkDestroyVideoSessionParametersKHR = nullptr;
     PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR fp_vkGetPhysicalDeviceVideoCapabilitiesKHR = nullptr;
+    PFN_vkGetEncodedVideoSessionParametersKHR fp_vkGetEncodedVideoSessionParametersKHR = nullptr;
     PFN_vkCmdBeginVideoCodingKHR fp_vkCmdBeginVideoCodingKHR = nullptr;
     PFN_vkCmdEndVideoCodingKHR fp_vkCmdEndVideoCodingKHR = nullptr;
     PFN_vkCmdEncodeVideoKHR fp_vkCmdEncodeVideoKHR = nullptr;
@@ -932,6 +933,7 @@ private:
     
     // Encode state
     bool sessionReset = false;
+    bool spsPpsWritten = false;  // Track if SPS/PPS has been written to file
     VkCommandBuffer encodeCommandBuffer = VK_NULL_HANDLE;
     VkFence encodeFence = VK_NULL_HANDLE;
     VkSemaphore encodeSemaphore = VK_NULL_HANDLE;
@@ -1010,6 +1012,7 @@ public:
         fp_vkDestroyVideoSessionParametersKHR = reinterpret_cast<PFN_vkDestroyVideoSessionParametersKHR>(vkGetDeviceProcAddr(device, "vkDestroyVideoSessionParametersKHR"));
         
         fp_vkGetPhysicalDeviceVideoCapabilitiesKHR = reinterpret_cast<PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR>(vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR"));
+        fp_vkGetEncodedVideoSessionParametersKHR = reinterpret_cast<PFN_vkGetEncodedVideoSessionParametersKHR>(vkGetDeviceProcAddr(device, "vkGetEncodedVideoSessionParametersKHR"));
 
         // Load encode command function pointers
         fp_vkCmdBeginVideoCodingKHR = reinterpret_cast<PFN_vkCmdBeginVideoCodingKHR>(vkGetDeviceProcAddr(device, "vkCmdBeginVideoCodingKHR"));
@@ -1019,7 +1022,8 @@ public:
 
         if (!fp_vkCreateVideoSessionKHR || !fp_vkDestroyVideoSessionKHR || !fp_vkGetVideoSessionMemoryRequirementsKHR ||
             !fp_vkBindVideoSessionMemoryKHR || !fp_vkCreateVideoSessionParametersKHR || !fp_vkDestroyVideoSessionParametersKHR ||
-            !fp_vkGetPhysicalDeviceVideoCapabilitiesKHR || !fp_vkCmdBeginVideoCodingKHR || !fp_vkCmdEndVideoCodingKHR ||
+            !fp_vkGetPhysicalDeviceVideoCapabilitiesKHR || !fp_vkGetEncodedVideoSessionParametersKHR ||
+            !fp_vkCmdBeginVideoCodingKHR || !fp_vkCmdEndVideoCodingKHR ||
             !fp_vkCmdEncodeVideoKHR || !fp_vkCmdControlVideoCodingKHR) {
             std::cerr << "Failed to load Vulkan Video extension functions" << std::endl;
             return false;
@@ -1353,6 +1357,72 @@ public:
         outputFile.write(reinterpret_cast<const char*>(data), size);
     }
     
+    // Retrieve and write SPS/PPS parameter sets to file
+    // This should be called before the first IDR frame
+    bool writeSpsPps() {
+        if (!outputFile.is_open() || !sessionParams || spsPpsWritten) return false;
+        
+        // Set up H.264 get info structure requesting SPS id=0 and PPS id=0
+        VkVideoEncodeH264SessionParametersGetInfoKHR h264GetInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_GET_INFO_KHR,
+            .pNext = nullptr,
+            .writeStdSPS = VK_TRUE,
+            .writeStdPPS = VK_TRUE,
+            .stdSPSId = 0,
+            .stdPPSId = 0,
+        };
+        
+        VkVideoEncodeSessionParametersGetInfoKHR getInfo = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_PARAMETERS_GET_INFO_KHR,
+            .pNext = &h264GetInfo,
+            .videoSessionParameters = sessionParams,
+        };
+        
+        // First call to get required buffer size
+        VkVideoEncodeH264SessionParametersFeedbackInfoKHR h264Feedback = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_FEEDBACK_INFO_KHR,
+            .pNext = nullptr,
+        };
+        
+        VkVideoEncodeSessionParametersFeedbackInfoKHR feedback = {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_PARAMETERS_FEEDBACK_INFO_KHR,
+            .pNext = &h264Feedback,
+        };
+        
+        size_t dataSize = 0;
+        VkResult result = fp_vkGetEncodedVideoSessionParametersKHR(device, &getInfo, &feedback, &dataSize, nullptr);
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to get SPS/PPS size: " << result << std::endl;
+            return false;
+        }
+        
+        if (dataSize == 0) {
+            std::cerr << "SPS/PPS data size is 0" << std::endl;
+            return false;
+        }
+        
+        // Allocate buffer and retrieve data
+        std::vector<uint8_t> paramData(dataSize);
+        result = fp_vkGetEncodedVideoSessionParametersKHR(device, &getInfo, &feedback, &dataSize, paramData.data());
+        if (result != VK_SUCCESS) {
+            std::cerr << "Failed to get SPS/PPS data: " << result << std::endl;
+            return false;
+        }
+        
+        // Write to file - data already includes start codes (0x00 0x00 0x00 0x01)
+        outputFile.write(reinterpret_cast<const char*>(paramData.data()), dataSize);
+        
+        std::cout << "Wrote SPS/PPS to file: " << dataSize << " bytes" << std::endl;
+        std::cout << "  SPS written: " << (h264Feedback.hasStdSPSOverrides ? "with overrides" : "as-is") << std::endl;
+        std::cout << "  PPS written: " << (h264Feedback.hasStdPPSOverrides ? "with overrides" : "as-is") << std::endl;
+        
+        spsPpsWritten = true;
+        return true;
+    }
+    
+    // Check if SPS/PPS has been written
+    bool isSpsPpsWritten() const { return spsPpsWritten; }
+    
     // Get current frame number
     uint64_t getFrameCount() const { return frameCounter; }
     
@@ -1649,7 +1719,17 @@ public:
         
         // Write encoded data to file using 32-bit values
         if (result == VK_SUCCESS && fb32->bytesWritten > 0 && bitstreamMappedPtr) {
-            std::cout << "[Encode] Writing " << fb32->bytesWritten << " bytes at offset " << fb32->offset << std::endl;
+            // For IDR frames, ensure SPS/PPS is written first
+            // This makes the stream self-contained and decodable from any IDR
+            bool isIDR = (frameCounter == 0) || (config.gopSize > 0 && (frameCounter % config.gopSize == 0));
+            if (isIDR && !spsPpsWritten) {
+                writeSpsPps();
+            }
+            
+            std::cout << "[Encode] Writing " << fb32->bytesWritten << " bytes at offset " << fb32->offset;
+            if (isIDR) std::cout << " (IDR frame)";
+            std::cout << std::endl;
+            
             const uint8_t* data = static_cast<const uint8_t*>(bitstreamMappedPtr) + fb32->offset;
             writeNALUnit(data, static_cast<size_t>(fb32->bytesWritten));
         }
