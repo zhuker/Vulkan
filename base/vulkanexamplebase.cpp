@@ -27,31 +27,32 @@ VkResult VulkanExampleBase::createInstance()
 {
 	std::vector<const char*> instanceExtensions = { VK_KHR_SURFACE_EXTENSION_NAME };
 
-	// Enable surface extensions depending on os
+    if (!settings.headless) {
+        // Enable surface extensions depending on os
 #if defined(_WIN32)
-	instanceExtensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_ANDROID_KHR)
-	instanceExtensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 #elif defined(_DIRECT2DISPLAY)
-	instanceExtensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_DIRECTFB_EXT)
-	instanceExtensions.push_back(VK_EXT_DIRECTFB_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_EXT_DIRECTFB_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	instanceExtensions.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
-	instanceExtensions.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_IOS_MVK)
-	instanceExtensions.push_back(VK_MVK_IOS_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_MVK_IOS_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_MACOS_MVK)
-	instanceExtensions.push_back(VK_MVK_MACOS_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_MVK_MACOS_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
-	instanceExtensions.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_HEADLESS_EXT)
-	instanceExtensions.push_back(VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_SCREEN_QNX)
-	instanceExtensions.push_back(VK_QNX_SCREEN_SURFACE_EXTENSION_NAME);
+        instanceExtensions.push_back(VK_QNX_SCREEN_SURFACE_EXTENSION_NAME);
 #endif
-
+    }
 	// Get extensions supported by the instance and store for later use
 	uint32_t extCount = 0;
 	vkEnumerateInstanceExtensionProperties(nullptr, &extCount, nullptr);
@@ -301,6 +302,11 @@ void VulkanExampleBase::nextFrame()
 
 void VulkanExampleBase::renderLoop()
 {
+	// In headless mode, the example handles its own render loop
+	if (settings.headless) {
+		return;
+	}
+
 // SRS - for non-apple plaforms, handle benchmarking here within VulkanExampleBase::renderLoop()
 //     - for macOS, handle benchmarking within NSApp rendering loop via displayLinkOutputCb()
 #if !(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT))
@@ -774,6 +780,7 @@ VulkanExampleBase::VulkanExampleBase()
 	commandLineParser.add("benchmarkresultfile", { "-bf", "--benchfilename" }, 1, "Set file name for benchmark results");
 	commandLineParser.add("benchmarkresultframes", { "-bt", "--benchframetimes" }, 0, "Save frame times to benchmark results file");
 	commandLineParser.add("benchmarkframes", { "-bfs", "--benchmarkframes" }, 1, "Only render the given number of frames");
+	commandLineParser.add("headless", { "-hl", "--headless" }, 0, "Dont render ui");
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	commandLineParser.add("resourcepath", { "-rp", "--resourcepath" }, 1, "Set path for dir where assets and shaders folder is present");
 #endif
@@ -804,7 +811,10 @@ VulkanExampleBase::VulkanExampleBase()
 	if (commandLineParser.isSet("fullscreen")) {
 		settings.fullscreen = true;
 	}
-	if (commandLineParser.isSet("shaders")) {
+    if (commandLineParser.isSet("headless")) {
+        settings.headless = true;
+    }
+    if (commandLineParser.isSet("shaders")) {
 		std::string value = commandLineParser.getValueAsString("shaders", "glsl");
 		if ((value != "glsl") && (value != "hlsl") && (value != "slang")) {
 			std::cerr << "Shader type must be one of 'glsl', 'hlsl' or 'slang'\n";
@@ -896,11 +906,15 @@ VulkanExampleBase::VulkanExampleBase()
 	bool libLoaded = vks::android::loadVulkanLibrary();
 	assert(libLoaded);
 #elif defined(_DIRECT2DISPLAY)
-
+    // Direct to display - no window system initialization needed
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	initWaylandConnection();
+    if (!settings.headless) {
+        initWaylandConnection();
+    }
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
-	initxcbConnection();
+    if (!settings.headless) {
+        initxcbConnection();
+    }
 #endif
 
 #if defined(_WIN32)
@@ -2435,6 +2449,11 @@ static inline xcb_intern_atom_reply_t* intern_atom_helper(xcb_connection_t *conn
 // Set up a window using XCB and request event types
 xcb_window_t VulkanExampleBase::setupWindow()
 {
+	// Skip window creation in headless mode
+	if (settings.headless) {
+		return 0;
+	}
+
 	uint32_t value_mask, value_list[32];
 
 	window = xcb_generate_id(connection);

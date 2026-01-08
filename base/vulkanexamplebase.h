@@ -87,13 +87,14 @@ private:
 	void updateOverlay();
 	void createPipelineCache();
 	void createCommandPool();
-	void createSynchronizationPrimitives();
 	void createSurface();
 	void createSwapChain();
-	void createCommandBuffers();
 	void destroyCommandBuffers();
 	std::string shaderDir = "glsl";
 protected:
+    void createCommandBuffers();
+    void createSynchronizationPrimitives();
+
 	// Returns the path to the root of the glsl, hlsl or slang shader directory.
 	std::string getShadersPath() const;
 
@@ -181,6 +182,7 @@ public:
 		bool vsync = false;
 		/** @brief Enable UI overlay */
 		bool overlay = true;
+		bool headless = false;
 	} settings;
 
 	/** @brief State of gamepad input (only used on Android) */
