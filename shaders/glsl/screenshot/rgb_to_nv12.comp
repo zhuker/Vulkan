@@ -1,0 +1,47 @@
+#version 450
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+// Use sampler for input since swapchain images don't support storage usage
+layout (binding = 0) uniform sampler2D inputImage;
+layout (binding = 1, r8) uniform writeonly image2D outputImageY;
+layout (binding = 2, rg8) uniform writeonly image2D outputImageUV;
+
+layout(push_constant) uniform PushConsts {
+    int swizzle;
+    int width;
+    int height;
+} push;
+
+void main()
+{
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+	if (pos.x >= push.width || pos.y >= push.height)
+		return;
+
+	// Sample using normalized coordinates
+	vec2 uv = (vec2(pos) + 0.5) / vec2(push.width, push.height);
+	vec4 color = texture(inputImage, uv);
+    
+    // Check for swizzle
+    if (push.swizzle == 1) {
+        float tmp = color.r;
+        color.r = color.b;
+        color.b = tmp;
+    }
+
+    // RGB to YUV conversion (BT.709)
+    float y = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+    float u = -0.1146 * color.r - 0.3854 * color.g + 0.5 * color.b + 0.5;
+    float v = 0.5 * color.r - 0.4542 * color.g - 0.0458 * color.b + 0.5;
+
+    imageStore(outputImageY, pos, vec4(y, 0.0, 0.0, 0.0));
+    
+    // UV is subsampled 2x2. Store only for even coordinates
+    if (pos.x % 2 == 0 && pos.y % 2 == 0)
+    {
+        imageStore(outputImageUV, pos / 2, vec4(u, v, 0.0, 0.0));
+    }
+}
+
