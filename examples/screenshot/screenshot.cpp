@@ -15,6 +15,7 @@
 #include <chrono>
 #include <atomic>
 #include <cmath>
+#include <bitset>
 
 // RGB to NV12 Color Conversion Pipeline
 // Uses a compute shader to convert RGB swapchain images to NV12 format for video encoding
@@ -963,6 +964,7 @@ private:
     static constexpr uint32_t MAX_DPB_SLOTS = 16;
     std::array<DPBSlot, MAX_DPB_SLOTS> dpbSlots{};
     uint32_t activeDPBSlots = 0;
+    std::bitset<MAX_DPB_SLOTS> activeSlotsInSession;
     
     // Bitstream output buffer
     VkBuffer bitstreamBuffer = VK_NULL_HANDLE;
@@ -2397,7 +2399,11 @@ private:
         
         // Output/Setup slot MUST be included in the bound reference slots so validation passes
         // Error 08215: pEncodeInfo->pSetupReferenceSlot->pPictureResource must match one of the bound reference picture resource
-        beginSlots[beginSlotCount++] = setupSlot;
+        VkVideoReferenceSlotInfoKHR beginSetupSlot = setupSlot;
+        if (slotIndex >= 0 && slotIndex < MAX_DPB_SLOTS && !activeSlotsInSession[slotIndex]) {
+            beginSetupSlot.slotIndex = -1; // Not yet active, use -1 to avoid VUID-vkCmdBeginVideoCodingKHR-slotIndex-07239
+        }
+        beginSlots[beginSlotCount++] = beginSetupSlot;
         
         // Reset query pool before beginning video coding (must be outside video coding scope)
         vkCmdResetQueryPool(cmdBuffer, queryPool, 0, 1);
@@ -2495,6 +2501,7 @@ private:
             
             currentAppliedBitrate = rateControlLayerInfo.averageBitrate;
             sessionReset = true;
+            activeSlotsInSession.reset();
         } else if (config.useVBR && rateControlLayerInfo.averageBitrate != currentAppliedBitrate) {
             // Bitrate changed in an active session - update rate control
             VkVideoCodingControlInfoKHR controlInfo = {
@@ -2517,6 +2524,10 @@ private:
         std::cout << "[Encode] Recording vkCmdEncodeVideoKHR..." << std::endl;
         fp_vkCmdEncodeVideoKHR(cmdBuffer, &encodeInfo);
         std::cout << "[Encode] Encode command recorded" << std::endl;
+
+        if (slotIndex >= 0 && slotIndex < MAX_DPB_SLOTS) {
+            activeSlotsInSession[slotIndex] = true;
+        }
         
         // End query
         vkCmdEndQuery(cmdBuffer, queryPool, 0);
