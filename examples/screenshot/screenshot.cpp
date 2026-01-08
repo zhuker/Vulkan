@@ -1227,6 +1227,29 @@ public:
         if (!videoSession) return false;
         
         // H.264 SPS (Sequence Parameter Set)
+        uint32_t width = config.width;
+        uint32_t height = config.height;
+        
+        // Calculate cropping if resolution is not a multiple of 16
+        bool croppingNeeded = (width % 16 != 0) || (height % 16 != 0);
+        uint32_t cropRight = 0;
+        uint32_t cropBottom = 0;
+        
+        if (croppingNeeded) {
+            // H.264 macroblocks are 16x16
+            uint32_t paddedWidth = (width + 15) / 16 * 16;
+            uint32_t paddedHeight = (height + 15) / 16 * 16;
+            
+            cropRight = paddedWidth - width;
+            cropBottom = paddedHeight - height;
+            
+            // Chroma format 4:2:0 means crop offsets are in units of 2 pixels
+            // (Standard requires frame_crop_*_offset to be in units of CropUnitX/Y defined by chroma format)
+            // For 4:2:0: CropUnitX = 2, CropUnitY = 2 * (frame_mbs_only_flag ? 1 : 2) = 2
+            cropRight /= 2;
+            cropBottom /= 2;
+        }
+
         StdVideoH264SequenceParameterSet sps = {};
         sps.flags.constraint_set0_flag = 0;
         sps.flags.constraint_set1_flag = 0;
@@ -1236,6 +1259,16 @@ public:
         sps.flags.constraint_set5_flag = 0;
         sps.flags.direct_8x8_inference_flag = 1;
         sps.flags.frame_mbs_only_flag = 1;
+        
+        if (croppingNeeded) {
+            sps.flags.frame_cropping_flag = 1;
+            sps.frame_crop_right_offset = cropRight;
+            sps.frame_crop_bottom_offset = cropBottom;
+            sps.frame_crop_left_offset = 0;
+            sps.frame_crop_top_offset = 0;
+            std::cout << "[SPS] Cropping enabled: right=" << cropRight << " (" << cropRight*2 << "px), bottom=" << cropBottom << " (" << cropBottom*2 << "px)" << std::endl;
+        }
+        
         sps.profile_idc = STD_VIDEO_H264_PROFILE_IDC_MAIN;
         sps.level_idc = STD_VIDEO_H264_LEVEL_IDC_4_1;
         sps.seq_parameter_set_id = 0;
@@ -1246,8 +1279,8 @@ public:
         sps.pic_order_cnt_type = STD_VIDEO_H264_POC_TYPE_0;  // POC type 0 is more widely supported
         sps.log2_max_pic_order_cnt_lsb_minus4 = 4;  // max_pic_order_cnt_lsb = 2^8 = 256
         sps.max_num_ref_frames = 1;
-        sps.pic_width_in_mbs_minus1 = (config.width + 15) / 16 - 1;
-        sps.pic_height_in_map_units_minus1 = (config.height + 15) / 16 - 1;
+        sps.pic_width_in_mbs_minus1 = (width + 15) / 16 - 1;
+        sps.pic_height_in_map_units_minus1 = (height + 15) / 16 - 1;
         
         // H.264 PPS (Picture Parameter Set)
         StdVideoH264PictureParameterSet pps = {};
@@ -1883,6 +1916,30 @@ public:
         }
         sessionMemory.clear();
         
+        // Reset encoder logic state
+        activeDPBSlots = 0;
+        activeSlotsInSession.reset();
+        
+        // Reset frame counters
+        decodingOrderFrameNum = 0;
+        streamFrameNum = 0;
+        lastIDRFrame = 0;
+        idrPicId = 0;
+        
+        // Reset reference tracking
+        lastRefSlotIndex = -1;
+        lastRefFrameNum = 0;
+        lastRefPicOrderCnt = 0;
+        lastRefPicType = STD_VIDEO_H264_PICTURE_TYPE_IDR;
+        
+        // Reset SPS generation state so new resolution generates new SPS
+        spsGenerated = false;
+        spsPpsWritten = false;
+        
+        // Reset session state
+        sessionReset = false;
+        currentAppliedBitrate = 0;
+        
         isInitialized = false;
     }
 
@@ -2483,7 +2540,35 @@ private:
             .referenceSlotCount = beginSlotCount,
             .pReferenceSlots = beginSlots.data(),
         };
+
+        // If rate control parameters have changed but we are NOT in the first frame (sessionReset is true),
+        // we must not pass the NEW parameters in pNext of BeginCoding because they don't match the CURRENT state.
+        // We will update them via ControlVideoCoding inside the block.
+        // So, if VBR is active and bitrate changed, we should pass the OLD parameters (or none, if that was allowed, 
+        // but for VBR we usually need persistent state).
+        // 
+        // Actually, the spec says: "if the pNext chain... includes an instance of VkVideoEncodeRateControlInfoKHR... 
+        // it must match the rate control state configured... at the time the command is executed."
+        //
+        // This means if we are about to CHANGE the rate control (because bitrate changed), we must pass the 
+        // *CURRENTLY ACTIVE* rate control info to BeginCoding, not the *NEW* target info.
         
+        // Create a copy of rate control info reflecting the OLD/CURRENT state for BeginCoding validation
+        VkVideoEncodeRateControlLayerInfoKHR currentLayerInfo = rateControlLayerInfo;
+        VkVideoEncodeRateControlInfoKHR currentRCInfo = rateControlInfo;
+        
+        if (sessionReset && config.useVBR && rateControlLayerInfo.averageBitrate != currentAppliedBitrate) {
+             // Revert layer info to match currently applied bitrate
+             currentLayerInfo.averageBitrate = currentAppliedBitrate;
+             currentLayerInfo.maxBitrate = currentAppliedBitrate;
+             
+             // Point to the reverted layer info
+             currentRCInfo.pLayers = &currentLayerInfo;
+             
+             // Use this "current state" info for BeginCoding validation
+             beginInfo.pNext = &currentRCInfo;
+        }
+
         std::cout << "[GOP] Begin coding with " << beginSlotCount << " reference slot(s)" << std::endl;
         
         fp_vkCmdBeginVideoCodingKHR(cmdBuffer, &beginInfo);
@@ -3004,6 +3089,25 @@ public:
 		prepared = true;
 	}
 
+	// Cleanup video encoding resources (called before reinitialization on resize)
+	void cleanupVideoEncoding()
+	{
+		if (device == VK_NULL_HANDLE) return;
+		
+		// Wait for any pending encoding operations to complete
+		vkDeviceWaitIdle(device);
+		
+		// Cleanup converter and encoder resources
+		rgbToNv12Converter.cleanup();
+		h264Encoder.cleanup();
+		
+		// Reset recording state
+		recordingEnabled = false;
+		encodedFrameCount = 0;
+		
+		std::cout << "Video encoding resources cleaned up" << std::endl;
+	}
+	
 	// Initialize video encoding pipeline (RGB to NV12 converter + H264 encoder)
 	void prepareVideoEncoding()
 	{
@@ -3014,10 +3118,38 @@ public:
 			return;
 		}
 
+        // Align resolution to even numbers (required for YUV420 chroma subsampling)
+        // If the window size is odd, we'll use a slightly larger even size for the encoder
+        // and pad/clamp the input image (handled by sampler CLAMP_TO_EDGE)
+        // 
+        // NEW: If we want to support cropping via SPS, we might just pass the original 'width' and 'height'
+        // to the encoder config, but still align the storage/encoding NV12 images to be sufficient 
+        // for the underlying 16x16 macroblocks (or at least 2x2 chroma blocks).
+        // 
+        // However, usually we want the ENCODE resolution to be the full padded/aligned resolution 
+        // if we are relying on SPS cropping to define the display window. 
+        // If we configure the encoder with aligned width/height, the SPS generation code 
+        // will see config.width/height as the aligned values and won't crop.
+        // 
+        // So we should pass the ACTUAL (odd/non-divisible) display width/height to the encoder config 
+        // so it can calculate the cropping parameters correctly for the SPS.
+        // BUT the underlying Vulkan images MUST still be aligned for 4:2:0 format requirements.
+        
+        // Let's use the actual window dimensions for the encoder configuration (which drives SPS cropping)
+        // But keep using aligned dimensions for the resource creation (images, converter).
+        
+        uint32_t alignedWidth = (width % 2 == 0) ? width : width + 1;
+        uint32_t alignedHeight = (height % 2 == 0) ? height : height + 1;
+
+        if (alignedWidth != width || alignedHeight != height) {
+            std::cout << "Note: Aligning video encoding resources from " << width << "x" << height 
+                      << " to " << alignedWidth << "x" << alignedHeight << " (required for 4:2:0 format)" << std::endl;
+        }
+
 		// Initialize H264 encoder first (to get access to video profiles)
 		VulkanH264Encoder::EncoderConfig encoderConfig;
-		encoderConfig.width = width;
-		encoderConfig.height = height;
+		encoderConfig.width = alignedWidth;
+		encoderConfig.height = alignedHeight;
 		encoderConfig.gopSize = 360;  // All I-frames
 	    encoderConfig.maxFrameRate = 60;
 		encoderConfig.qp = 23;
@@ -3045,7 +3177,8 @@ public:
 			swapchainImages.push_back(swapChain.images[i]);
 		}
 
-		if (!rgbToNv12Converter.initialize(vulkanDevice, width, height, 
+		// Use aligned width/height for converter to match encoder expectations
+		if (!rgbToNv12Converter.initialize(vulkanDevice, alignedWidth, alignedHeight, 
 				swapChain.colorFormat, swapchainImages, getShadersPath(),
 				&h264Encoder.getVideoProfileList())) {
 			std::cerr << "Failed to initialize RGB to NV12 converter" << std::endl;
@@ -3077,12 +3210,57 @@ public:
 		
 		bool sameQueueFamily = (graphicsQueueFamily == videoQueueFamily);
 		std::cout << "Video encoding pipeline initialized successfully" << std::endl;
-		std::cout << "  Resolution: " << width << "x" << height << std::endl;
+		std::cout << "  Resolution: " << alignedWidth << "x" << alignedHeight 
+		          << " (aligned from " << width << "x" << height << ")" << std::endl;
 		std::cout << "  Output: " << encoderConfig.outputPath << std::endl;
 		std::cout << "  Graphics queue family: " << graphicsQueueFamily << std::endl;
 		std::cout << "  Video queue family: " << videoQueueFamily << std::endl;
 		std::cout << "  Cross-queue transfer needed: " << (sameQueueFamily ? "No" : "Yes") << std::endl;
 		std::cout << "  Press 'R' to start/stop recording" << std::endl;
+	}
+	
+	// Handle window resize by reinitializing video encoder with new dimensions
+	void windowResized() override
+	{
+		// Check if encoder was initialized before resize
+		bool wasEncoderInitialized = h264Encoder.isReady();
+		
+		if (wasEncoderInitialized) {
+			std::cout << "Window resized to " << width << "x" << height 
+			          << ", reinitializing video encoder..." << std::endl;
+			
+			// Clean up existing encoder resources
+			cleanupVideoEncoding();
+			
+			// Reinitialize video encoding with new dimensions
+			// This will generate new SPS/PPS and start from an I-frame
+			prepareVideoEncoding();
+
+            // Transition all swapchain images to PRESENT_SRC_KHR layout
+            // This ensures that they are in the expected layout for the first frame after resize,
+            // avoiding validation errors if descriptors or render passes expect PRESENT_SRC_KHR.
+            VkCommandBuffer layoutCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+            for (uint32_t i = 0; i < swapChain.imageCount; i++) {
+                vks::tools::insertImageMemoryBarrier(
+                    layoutCmd,
+                    swapChain.images[i],
+                    0,
+                    VK_ACCESS_MEMORY_READ_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                    VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 });
+            }
+            vulkanDevice->flushCommandBuffer(layoutCmd, queue);
+			
+			if (h264Encoder.isReady()) {
+				std::cout << "Video encoder reinitialized successfully at " 
+				          << width << "x" << height << std::endl;
+			} else {
+				std::cerr << "Failed to reinitialize video encoder after resize" << std::endl;
+			}
+		}
 	}
 
 	void buildCommandBuffer()
