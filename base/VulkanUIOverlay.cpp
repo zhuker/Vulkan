@@ -396,18 +396,39 @@ namespace vks
 
 	void UIOverlay::freeResources()
 	{
+		// Early exit if device is not set (resources were never initialized)
+		if (!device || device->logicalDevice == VK_NULL_HANDLE) {
+			return;
+		}
+
 		for (auto& buffer : buffers) {
 			buffer.vertexBuffer.destroy();
 			buffer.indexBuffer.destroy();
 		}
-		vkDestroyImageView(device->logicalDevice, fontView, nullptr);
-		vkDestroyImage(device->logicalDevice, fontImage, nullptr);
-		vkFreeMemory(device->logicalDevice, fontMemory, nullptr);
-		vkDestroySampler(device->logicalDevice, sampler, nullptr);
-		vkDestroyDescriptorSetLayout(device->logicalDevice, descriptorSetLayout, nullptr);
-		vkDestroyDescriptorPool(device->logicalDevice, descriptorPool, nullptr);
-		vkDestroyPipelineLayout(device->logicalDevice, pipelineLayout, nullptr);
-		vkDestroyPipeline(device->logicalDevice, pipeline, nullptr);
+		if (fontView != VK_NULL_HANDLE) {
+			vkDestroyImageView(device->logicalDevice, fontView, nullptr);
+		}
+		if (fontImage != VK_NULL_HANDLE) {
+			vkDestroyImage(device->logicalDevice, fontImage, nullptr);
+		}
+		if (fontMemory != VK_NULL_HANDLE) {
+			vkFreeMemory(device->logicalDevice, fontMemory, nullptr);
+		}
+		if (sampler != VK_NULL_HANDLE) {
+			vkDestroySampler(device->logicalDevice, sampler, nullptr);
+		}
+		if (descriptorSetLayout != VK_NULL_HANDLE) {
+			vkDestroyDescriptorSetLayout(device->logicalDevice, descriptorSetLayout, nullptr);
+		}
+		if (descriptorPool != VK_NULL_HANDLE) {
+			vkDestroyDescriptorPool(device->logicalDevice, descriptorPool, nullptr);
+		}
+		if (pipelineLayout != VK_NULL_HANDLE) {
+			vkDestroyPipelineLayout(device->logicalDevice, pipelineLayout, nullptr);
+		}
+		if (pipeline != VK_NULL_HANDLE) {
+			vkDestroyPipeline(device->logicalDevice, pipeline, nullptr);
+		}
 	}
 
 	bool UIOverlay::header(const char *caption)

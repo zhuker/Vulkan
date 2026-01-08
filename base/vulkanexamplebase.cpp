@@ -230,7 +230,7 @@ void VulkanExampleBase::prepare()
 	setupRenderPass();
 	createPipelineCache();
 	setupFrameBuffer();
-	settings.overlay = settings.overlay && (!benchmark.active);
+	settings.overlay = settings.overlay && (!benchmark.active) && (!settings.headless);
 	if (settings.overlay) {
 		ui.maxConcurrentFrames = maxConcurrentFrames;
 		ui.device = vulkanDevice;
@@ -969,37 +969,45 @@ VulkanExampleBase::~VulkanExampleBase()
 #if defined(_DIRECT2DISPLAY)
 
 #elif defined(VK_USE_PLATFORM_DIRECTFB_EXT)
-	if (event_buffer)
-		event_buffer->Release(event_buffer);
-	if (surface)
-		surface->Release(surface);
-	if (window)
-		window->Release(window);
-	if (layer)
-		layer->Release(layer);
-	if (dfb)
-		dfb->Release(dfb);
+	if (!settings.headless) {
+		if (event_buffer)
+			event_buffer->Release(event_buffer);
+		if (surface)
+			surface->Release(surface);
+		if (window)
+			window->Release(window);
+		if (layer)
+			layer->Release(layer);
+		if (dfb)
+			dfb->Release(dfb);
+	}
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	xdg_toplevel_destroy(xdg_toplevel);
-	xdg_surface_destroy(xdg_surface);
-	wl_surface_destroy(surface);
-	if (keyboard)
-		wl_keyboard_destroy(keyboard);
-	if (pointer)
-		wl_pointer_destroy(pointer);
-	if (seat)
-		wl_seat_destroy(seat);
-	xdg_wm_base_destroy(shell);
-	wl_compositor_destroy(compositor);
-	wl_registry_destroy(registry);
-	wl_display_disconnect(display);
+	if (!settings.headless) {
+		xdg_toplevel_destroy(xdg_toplevel);
+		xdg_surface_destroy(xdg_surface);
+		wl_surface_destroy(surface);
+		if (keyboard)
+			wl_keyboard_destroy(keyboard);
+		if (pointer)
+			wl_pointer_destroy(pointer);
+		if (seat)
+			wl_seat_destroy(seat);
+		xdg_wm_base_destroy(shell);
+		wl_compositor_destroy(compositor);
+		wl_registry_destroy(registry);
+		wl_display_disconnect(display);
+	}
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
-	xcb_destroy_window(connection, window);
-	xcb_disconnect(connection);
+	if (!settings.headless) {
+		xcb_destroy_window(connection, window);
+		xcb_disconnect(connection);
+	}
 #elif defined(VK_USE_PLATFORM_SCREEN_QNX)
-	screen_destroy_event(screen_event);
-	screen_destroy_window(screen_window);
-	screen_destroy_context(screen_context);
+	if (!settings.headless) {
+		screen_destroy_event(screen_event);
+		screen_destroy_window(screen_window);
+		screen_destroy_context(screen_context);
+	}
 #endif
 }
 
