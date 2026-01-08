@@ -28,6 +28,7 @@ namespace vks
 		{
 			// Select prefix depending on flags passed to the callback
 			std::string prefix;
+		    bool die = false;
 
 			if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) {
 				prefix = "VERBOSE: ";
@@ -47,6 +48,7 @@ namespace vks
 			}
 			else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 				prefix = "WARNING: ";
+			    die = true;
 #if defined(_WIN32)
 				if (!logToFile) {
 					prefix = "\033[33m" + prefix + "\033[0m";
@@ -55,6 +57,7 @@ namespace vks
 			}
 			else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
 				prefix = "ERROR: ";
+			    die = true;
 #if defined(_WIN32)
 				if (!logToFile) {
 					prefix = "\033[31m" + prefix + "\033[0m";
@@ -88,6 +91,9 @@ namespace vks
 				log(debugMessage.str());
 			}
 			fflush(stdout);
+		    if (die) {
+		        assert(!die && "vulkan validation failure");
+		    }
 #endif
 
 
