@@ -2365,16 +2365,6 @@ void VulkanExampleBase::initWaylandConnection()
 	}
 }
 
-void VulkanExampleBase::setSize(int width, int height)
-{
-	if (width <= 0 || height <= 0)
-		return;
-
-	destWidth = width;
-	destHeight = height;
-
-	windowResize();
-}
 
 static void
 xdg_surface_handle_configure(void *data, struct xdg_surface *surface, uint32_t serial)
@@ -2935,6 +2925,31 @@ void VulkanExampleBase::setupWindow()
 {
 }
 #endif
+void VulkanExampleBase::setSize(int newWidth, int newHeight)
+{
+	if (newWidth <= 0 || newHeight <= 0)
+		return;
+
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+    if (connection && window) {
+        uint32_t values[] = { static_cast<uint32_t>(newWidth), static_cast<uint32_t>(newHeight) };
+        // Request the X server to configure the window size
+        xcb_configure_window(
+            connection, 
+            window, 
+            XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, 
+            values
+        );
+        // Flush the command to the server
+        xcb_flush(connection);
+    }
+#else
+	destWidth = width;
+	destHeight = height;
+
+	windowResize();
+#endif
+}
 
 void VulkanExampleBase::keyPressed(uint32_t) {}
 

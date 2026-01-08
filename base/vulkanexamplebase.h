@@ -311,7 +311,6 @@ public:
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
 	struct xdg_surface *setupWindow();
 	void initWaylandConnection();
-	void setSize(int width, int height);
 	static void registryGlobalCb(void *data, struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version);
 	void registryGlobal(struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version);
 	static void registryGlobalRemoveCb(void *data, struct wl_registry *registry, uint32_t name);
@@ -344,6 +343,7 @@ public:
 #else
 	void setupWindow();
 #endif
+    void setSize(int width, int height);
 	/** @brief (Virtual) Creates the application wide Vulkan instance */
 	virtual VkResult createInstance();
 	/** @brief (Pure virtual) Render function to be implemented by the sample application */
