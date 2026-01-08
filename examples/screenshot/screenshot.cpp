@@ -129,9 +129,11 @@ public:
 
     // Record compute dispatch commands for color conversion
     // If srcQueueFamily != dstQueueFamily, we need to release ownership to dstQueueFamily (video encode)
+    // srcLayout: the current layout of the source image (PRESENT_SRC_KHR for windowed, TRANSFER_SRC_OPTIMAL for headless)
     void recordCommands(VkCommandBuffer cmdBuffer, uint32_t imageIndex, VkImage srcImage,
                         uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED, 
-                        uint32_t dstQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
+                        uint32_t dstQueueFamily = VK_QUEUE_FAMILY_IGNORED,
+                        VkImageLayout srcLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
         if (!isInitialized || imageIndex >= nv12Images.size()) return;
 
         NV12Image& nv12 = nv12Images[imageIndex];
@@ -143,12 +145,12 @@ public:
         
         bool hasEncodeImage = (nv12.encodeImage != VK_NULL_HANDLE);
 
-        // Transition source (swapchain) image to SHADER_READ_ONLY_OPTIMAL for sampled read
+        // Transition source (swapchain/offscreen) image to SHADER_READ_ONLY_OPTIMAL for sampled read
         VkImageMemoryBarrier srcBarrier = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .oldLayout = srcLayout,
             .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -280,13 +282,18 @@ public:
                            nv12.encodeImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &uvCopy);
 
             // Transition encode image to VIDEO_ENCODE_SRC layout (with optional ownership transfer)
+            // For queue family ownership transfer, this is the release barrier - we use NONE for 
+            // dst stage/access since the acquire barrier on the video queue will handle synchronization
+            VkPipelineStageFlags2 dstStage = needsOwnershipTransfer ? VK_PIPELINE_STAGE_2_NONE : VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR;
+            VkAccessFlags2 dstAccess = needsOwnershipTransfer ? VK_ACCESS_2_NONE : VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR;
+            
             VkImageMemoryBarrier2 encodeBarriers[] = {
                 {
                     .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                     .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                     .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-                    .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+                    .dstStageMask = dstStage,
+                    .dstAccessMask = dstAccess,
                     .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
                     .srcQueueFamilyIndex = needsOwnershipTransfer ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
@@ -298,8 +305,8 @@ public:
                     .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                     .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                     .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
-                    .dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
+                    .dstStageMask = dstStage,
+                    .dstAccessMask = dstAccess,
                     .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     .newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
                     .srcQueueFamilyIndex = needsOwnershipTransfer ? srcQueueFamily : VK_QUEUE_FAMILY_IGNORED,
@@ -316,13 +323,13 @@ public:
             vkCmdPipelineBarrier2(cmdBuffer, &depInfo);
         }
 
-        // Transition swapchain image back to present
+        // Transition source image back to original layout
         VkImageMemoryBarrier srcPostBarrier = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
             .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .newLayout = srcLayout,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = srcImage,
@@ -2525,7 +2532,7 @@ private:
             .layerCount = config.useVBR ? 1u : 0u,
             .pLayers = config.useVBR ? &rateControlLayerInfo : nullptr,
             .virtualBufferSizeInMs = config.useVBR ? 1000u : 0u, // Set leaky bucket size for VBR
-            .initialVirtualBufferSizeInMs = config.useVBR ? 1000u : 0u,
+            .initialVirtualBufferSizeInMs = 0u, // Must be less than virtualBufferSizeInMs (start with empty buffer)
         };
         
         // Begin video coding
@@ -2684,6 +2691,20 @@ public:
 	uint32_t graphicsQueueFamily{ VK_QUEUE_FAMILY_IGNORED };
 	uint32_t videoQueueFamily{ VK_QUEUE_FAMILY_IGNORED };
 
+	// rendering resources for headless mode
+	struct HeadlessResources {
+		VkImage colorImage{ VK_NULL_HANDLE };
+		VkDeviceMemory colorMemory{ VK_NULL_HANDLE };
+		VkImageView colorView{ VK_NULL_HANDLE };
+		VkFramebuffer framebuffer{ VK_NULL_HANDLE };
+		uint32_t width{ 0 };
+		uint32_t height{ 0 };
+	} offscreen;
+
+	// Headless mode configuration
+	static constexpr uint32_t HEADLESS_FRAME_COUNT = 1000;
+	uint32_t headlessFramesRendered{ 0 };
+
 	VulkanExample() : VulkanExampleBase(), uniformBuffers{}
 	{
 		title = "Saving framebuffer to screenshot";
@@ -2702,6 +2723,20 @@ public:
 		if (device) {
 			// Wait for any pending encode operations
 			vkDeviceWaitIdle(device);
+			
+			// Cleanup offscreen resources (headless mode)
+			if (offscreen.framebuffer != VK_NULL_HANDLE) {
+				vkDestroyFramebuffer(device, offscreen.framebuffer, nullptr);
+			}
+			if (offscreen.colorView != VK_NULL_HANDLE) {
+				vkDestroyImageView(device, offscreen.colorView, nullptr);
+			}
+			if (offscreen.colorImage != VK_NULL_HANDLE) {
+				vkDestroyImage(device, offscreen.colorImage, nullptr);
+			}
+			if (offscreen.colorMemory != VK_NULL_HANDLE) {
+				vkFreeMemory(device, offscreen.colorMemory, nullptr);
+			}
 			
 			// Cleanup color conversion resources
 			if (colorConvertFence != VK_NULL_HANDLE) {
@@ -2774,10 +2809,263 @@ public:
             if (h265) {
                 enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME);
             }
-            if (av1) {
-                enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME);
-            }
+            // Note: AV1 extension not enabled - validation layers don't support it yet
+            // Uncomment when validation layer support is added:
+            // if (av1) {
+            //     enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME);
+            // }
         }
+	}
+
+	// Setup offscreen rendering resources for headless mode
+	void setupHeadlessResources()
+	{
+		offscreen.width = width;
+		offscreen.height = height;
+
+		// Create color attachment image
+		VkImageCreateInfo imageInfo = vks::initializers::imageCreateInfo();
+		imageInfo.imageType = VK_IMAGE_TYPE_2D;
+		imageInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+		imageInfo.extent.width = width;
+		imageInfo.extent.height = height;
+		imageInfo.extent.depth = 1;
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VK_CHECK_RESULT(vkCreateImage(device, &imageInfo, nullptr, &offscreen.colorImage));
+
+		// Allocate memory
+		VkMemoryRequirements memReqs;
+		vkGetImageMemoryRequirements(device, offscreen.colorImage, &memReqs);
+		VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
+		memAlloc.allocationSize = memReqs.size;
+		memAlloc.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_CHECK_RESULT(vkAllocateMemory(device, &memAlloc, nullptr, &offscreen.colorMemory));
+		VK_CHECK_RESULT(vkBindImageMemory(device, offscreen.colorImage, offscreen.colorMemory, 0));
+
+		// Create image view
+		VkImageViewCreateInfo viewInfo = vks::initializers::imageViewCreateInfo();
+		viewInfo.image = offscreen.colorImage;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.baseMipLevel = 0;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.baseArrayLayer = 0;
+		viewInfo.subresourceRange.layerCount = 1;
+		VK_CHECK_RESULT(vkCreateImageView(device, &viewInfo, nullptr, &offscreen.colorView));
+
+		std::cout << "Offscreen color attachment created: " << width << "x" << height << std::endl;
+	}
+
+	// Setup render pass for headless mode with TRANSFER_SRC_OPTIMAL final layout
+	void setupHeadlessRenderPass()
+	{
+		std::array<VkAttachmentDescription, 2> attachments = {};
+		// Color attachment
+		attachments[0].format = VK_FORMAT_B8G8R8A8_UNORM;
+		attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+		attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+		// Depth attachment
+		attachments[1].format = depthFormat;
+		attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+		attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentReference colorReference = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+		VkAttachmentReference depthReference = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+		VkSubpassDescription subpassDescription = {};
+		subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpassDescription.colorAttachmentCount = 1;
+		subpassDescription.pColorAttachments = &colorReference;
+		subpassDescription.pDepthStencilAttachment = &depthReference;
+
+		std::array<VkSubpassDependency, 2> dependencies;
+		dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+		dependencies[0].dstSubpass = 0;
+		dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+		dependencies[1].srcSubpass = 0;
+		dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+		dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+		VkRenderPassCreateInfo renderPassInfo = vks::initializers::renderPassCreateInfo();
+		renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+		renderPassInfo.pAttachments = attachments.data();
+		renderPassInfo.subpassCount = 1;
+		renderPassInfo.pSubpasses = &subpassDescription;
+		renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+		renderPassInfo.pDependencies = dependencies.data();
+
+		VK_CHECK_RESULT(vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass));
+		std::cout << "Headless render pass created" << std::endl;
+	}
+
+	// Setup framebuffer for headless mode
+	void setupHeadlessFramebuffer()
+	{
+		std::array<VkImageView, 2> attachments = { offscreen.colorView, depthStencil.view };
+
+		VkFramebufferCreateInfo fbInfo = vks::initializers::framebufferCreateInfo();
+		fbInfo.renderPass = renderPass;
+		fbInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+		fbInfo.pAttachments = attachments.data();
+		fbInfo.width = width;
+		fbInfo.height = height;
+		fbInfo.layers = 1;
+
+		VK_CHECK_RESULT(vkCreateFramebuffer(device, &fbInfo, nullptr, &offscreen.framebuffer));
+		std::cout << "Headless framebuffer created: " << width << "x" << height << std::endl;
+	}
+
+	// Headless render loop - renders fixed number of frames and encodes them
+	void renderLoopHeadless()
+	{
+		std::cout << "Starting headless rendering of " << HEADLESS_FRAME_COUNT << " frames..." << std::endl;
+		
+		auto startTime = std::chrono::high_resolution_clock::now();
+		
+		for (headlessFramesRendered = 0; headlessFramesRendered < HEADLESS_FRAME_COUNT; headlessFramesRendered++) {
+			// Progress output every 100 frames
+			if (headlessFramesRendered % 100 == 0) {
+				std::cout << "Rendering frame " << headlessFramesRendered << "/" << HEADLESS_FRAME_COUNT << std::endl;
+			}
+			
+			// Update uniforms (animate camera slightly for visual verification)
+			camera.rotate(glm::vec3(0.01f, 0.0f, 0.0f));
+			uniformData.projection = camera.matrices.perspective;
+			uniformData.view = camera.matrices.view;
+			uniformData.model = glm::mat4(1.0f);
+			uniformBuffers[0].copyTo(&uniformData, sizeof(UniformData));
+			
+			// Build and record command buffer
+			buildHeadlessCommandBuffer();
+			
+			// Submit rendering
+			VkSubmitInfo submitInfo = vks::initializers::submitInfo();
+			submitInfo.commandBufferCount = 1;
+			submitInfo.pCommandBuffers = &drawCmdBuffers[0];
+			
+			// Reset fence before submitting (fence is created signaled by base class)
+			VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[0]));
+			VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[0]));
+			VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFences[0], VK_TRUE, UINT64_MAX));
+			
+			// Encode frame
+			if (h264Encoder.isReady() && rgbToNv12Converter.isReady()) {
+				encodeHeadlessFrame();
+			}
+		}
+		
+		auto endTime = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+		
+		std::cout << "Headless rendering complete!" << std::endl;
+		std::cout << "  Total frames: " << HEADLESS_FRAME_COUNT << std::endl;
+		std::cout << "  Total time: " << duration << "ms" << std::endl;
+		std::cout << "  Average FPS: " << (HEADLESS_FRAME_COUNT * 1000.0 / duration) << std::endl;
+		std::cout << "  Encoded frames: " << encodedFrameCount << std::endl;
+		
+		vkDeviceWaitIdle(device);
+	}
+
+	// Build command buffer for headless rendering
+	void buildHeadlessCommandBuffer()
+	{
+		VkCommandBuffer cmdBuffer = drawCmdBuffers[0];
+		
+		VK_CHECK_RESULT(vkResetCommandBuffer(cmdBuffer, 0));
+		
+		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+
+		VkClearValue clearValues[2]{};
+		clearValues[0].color = defaultClearColor;
+		clearValues[1].depthStencil = { 1.0f, 0 };
+
+		VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+		renderPassBeginInfo.renderPass = renderPass;
+		renderPassBeginInfo.renderArea.offset.x = 0;
+		renderPassBeginInfo.renderArea.offset.y = 0;
+		renderPassBeginInfo.renderArea.extent.width = width;
+		renderPassBeginInfo.renderArea.extent.height = height;
+		renderPassBeginInfo.clearValueCount = 2;
+		renderPassBeginInfo.pClearValues = clearValues;
+		renderPassBeginInfo.framebuffer = offscreen.framebuffer;
+
+		VK_CHECK_RESULT(vkBeginCommandBuffer(cmdBuffer, &cmdBufInfo));
+		vkCmdBeginRenderPass(cmdBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+		VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
+		vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
+		VkRect2D scissor = vks::initializers::rect2D(static_cast<int32_t>(width), static_cast<int32_t>(height), 0, 0);
+		vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
+		vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[0], 0, nullptr);
+		vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+		model.draw(cmdBuffer);
+		// Note: No UI in headless mode
+		vkCmdEndRenderPass(cmdBuffer);
+		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
+	}
+
+	// Encode a frame in headless mode
+	void encodeHeadlessFrame()
+	{
+		// Wait for previous color conversion to complete
+		vkWaitForFences(device, 1, &colorConvertFence, VK_TRUE, UINT64_MAX);
+		vkResetFences(device, 1, &colorConvertFence);
+		
+		// Record color conversion commands
+		vkResetCommandBuffer(colorConvertCmdBuffer, 0);
+		
+		VkCommandBufferBeginInfo beginInfo = vks::initializers::commandBufferBeginInfo();
+		VK_CHECK_RESULT(vkBeginCommandBuffer(colorConvertCmdBuffer, &beginInfo));
+		
+		// Use TRANSFER_SRC_OPTIMAL for headless mode (set by render pass final layout)
+		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, 0, 
+		                                   offscreen.colorImage,
+		                                   graphicsQueueFamily, videoQueueFamily,
+		                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		
+		VK_CHECK_RESULT(vkEndCommandBuffer(colorConvertCmdBuffer));
+		
+		// Submit color conversion
+		VkSubmitInfo submitInfo = vks::initializers::submitInfo();
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &colorConvertCmdBuffer;
+		
+		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, colorConvertFence));
+		vkWaitForFences(device, 1, &colorConvertFence, VK_TRUE, UINT64_MAX);
+		
+		// Get NV12 image for encoding (always index 0 in headless mode)
+		const auto& nv12Image = rgbToNv12Converter.getNV12Image(0);
+		
+		// Encode the frame
+		if (h264Encoder.encodeFrame(nv12Image.encodeImage, nv12Image.encodeView, queue,
+		                            VK_NULL_HANDLE, graphicsQueueFamily)) {
+			encodedFrameCount++;
+		}
 	}
 
 	void loadAssets()
@@ -3080,13 +3368,143 @@ public:
 
 	void prepare() override
 	{
-		VulkanExampleBase::prepare();
+		if (settings.headless) {
+			// Headless mode: skip swapchain, create offscreen resources
+			prepareHeadless();
+		} else {
+			// Normal windowed mode
+			VulkanExampleBase::prepare();
+			loadAssets();
+			prepareUniformBuffers();
+			setupDescriptors();
+			preparePipelines();
+			prepareVideoEncoding();
+			prepared = true;
+		}
+	}
+
+	// Prepare for headless rendering
+	void prepareHeadless()
+	{
+		std::cout << "Preparing headless rendering at " << width << "x" << height << std::endl;
+		
+		// Create command pool (normally done in base class but we need to do it here)
+		VkCommandPoolCreateInfo cmdPoolInfo = vks::initializers::commandPoolCreateInfo();
+		cmdPoolInfo.queueFamilyIndex = vulkanDevice->queueFamilyIndices.graphics;
+		cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		VK_CHECK_RESULT(vkCreateCommandPool(device, &cmdPoolInfo, nullptr, &cmdPool));
+		
+		// Create command buffers
+		createCommandBuffers();
+		
+		// Setup depth stencil (uses base class)
+		setupDepthStencil();
+		
+		// Setup headless-specific render pass
+		setupHeadlessRenderPass();
+		
+		// Setup offscreen color attachment
+		setupHeadlessResources();
+		
+		// Setup framebuffer
+		setupHeadlessFramebuffer();
+		
+		// Create pipeline cache
+		VkPipelineCacheCreateInfo pipelineCacheInfo{};
+		pipelineCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+		VK_CHECK_RESULT(vkCreatePipelineCache(device, &pipelineCacheInfo, nullptr, &pipelineCache));
+		
+		// Create synchronization primitives (fences for command buffer submission)
+		VkFenceCreateInfo fenceInfo = vks::initializers::fenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
+		VK_CHECK_RESULT(vkCreateFence(device, &fenceInfo, nullptr, &waitFences[0]));
+		
+		// Load assets and prepare rendering resources
 		loadAssets();
 		prepareUniformBuffers();
 		setupDescriptors();
 		preparePipelines();
-		prepareVideoEncoding();
+		
+		// Prepare video encoding for headless mode
+		prepareVideoEncodingHeadless();
+		
 		prepared = true;
+		
+		// Auto-start recording in headless mode
+		recordingEnabled = true;
+		
+		// Run the headless render loop
+		renderLoopHeadless();
+	}
+
+	// Initialize video encoding for headless mode (single offscreen image instead of swapchain)
+	void prepareVideoEncodingHeadless()
+	{
+		// Check if video encoding is supported
+		if (!vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME) ||
+		    !vulkanDevice->extensionSupported(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME)) {
+			std::cout << "H.264 video encoding or maintenance1 not supported, skipping encoder setup" << std::endl;
+			return;
+		}
+
+		// Align resolution to even numbers
+		uint32_t alignedWidth = (width % 2 == 0) ? width : width + 1;
+		uint32_t alignedHeight = (height % 2 == 0) ? height : height + 1;
+
+		if (alignedWidth != width || alignedHeight != height) {
+			std::cout << "Note: Aligning video encoding resources from " << width << "x" << height 
+			          << " to " << alignedWidth << "x" << alignedHeight << " (required for 4:2:0 format)" << std::endl;
+		}
+
+		// Initialize H264 encoder
+		VulkanH264Encoder::EncoderConfig encoderConfig;
+		encoderConfig.width = alignedWidth;
+		encoderConfig.height = alignedHeight;
+		encoderConfig.gopSize = 60;
+		encoderConfig.maxFrameRate = 0;  // No frame rate limit in headless mode
+		encoderConfig.qp = 23;
+		encoderConfig.outputPath = "recording.h264";
+		encoderConfig.useVBR = false;  // CQP for headless
+
+		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
+			std::cerr << "Failed to initialize H264 encoder" << std::endl;
+			return;
+		}
+
+		if (!h264Encoder.setupProfiles()) {
+			std::cerr << "Failed to setup video profiles" << std::endl;
+			return;
+		}
+
+		// For headless mode, use a single offscreen image
+		std::vector<VkImage> offscreenImages = { offscreen.colorImage };
+
+		if (!rgbToNv12Converter.initialize(vulkanDevice, alignedWidth, alignedHeight, 
+				VK_FORMAT_B8G8R8A8_UNORM, offscreenImages, getShadersPath(),
+				&h264Encoder.getVideoProfileList())) {
+			std::cerr << "Failed to initialize RGB to NV12 converter" << std::endl;
+			return;
+		}
+
+		if (!h264Encoder.setupVideoSession()) {
+			std::cerr << "Failed to setup video encode session" << std::endl;
+			return;
+		}
+
+		// Create command buffer for color conversion
+		VkCommandBufferAllocateInfo cmdBufAllocInfo = vks::initializers::commandBufferAllocateInfo(cmdPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1);
+		VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocInfo, &colorConvertCmdBuffer));
+		
+		// Create fence for color conversion synchronization
+		VkFenceCreateInfo fenceInfo = vks::initializers::fenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
+		VK_CHECK_RESULT(vkCreateFence(device, &fenceInfo, nullptr, &colorConvertFence));
+		
+		// Store queue family indices
+		graphicsQueueFamily = vulkanDevice->queueFamilyIndices.graphics;
+		videoQueueFamily = h264Encoder.getVideoQueueFamilyIndex();
+		
+		std::cout << "Headless video encoding pipeline initialized" << std::endl;
+		std::cout << "  Resolution: " << alignedWidth << "x" << alignedHeight << std::endl;
+		std::cout << "  Output: " << encoderConfig.outputPath << std::endl;
 	}
 
 	// Cleanup video encoding resources (called before reinitialization on resize)
