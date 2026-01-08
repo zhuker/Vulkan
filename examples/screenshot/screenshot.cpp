@@ -3148,8 +3148,8 @@ public:
 				auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastEncodeTime);
 				auto minInterval = std::chrono::milliseconds(1000 / config.maxFrameRate);
 				if (elapsed < minInterval) {
-					std::cout << "[Frame] Skipping frame (rate limit: " << elapsed.count() 
-					          << "ms < " << minInterval.count() << "ms)" << std::endl;
+					// std::cout << "[Frame] Skipping frame (rate limit: " << elapsed.count() 
+					//           << "ms < " << minInterval.count() << "ms)" << std::endl;
 					return;
 				}
 			}
