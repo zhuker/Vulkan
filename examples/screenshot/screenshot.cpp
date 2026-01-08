@@ -3396,6 +3396,12 @@ public:
 	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
 	{
 		if (overlay->header("Functions")) {
+            if (overlay->button("Resize Window")) {
+                if (width != 1201 || height != 710)
+                    setSize(1201, 710); // Odd dimensions to test alignment handling
+                else
+                    setSize(1280, 720);
+            }
 			if (overlay->button("Take screenshot")) {
 				saveScreenshot("screenshot.ppm");
 			}
