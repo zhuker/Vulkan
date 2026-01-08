@@ -11,11 +11,40 @@
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
 #include <fstream>
-#include <thread>
 #include <chrono>
 #include <atomic>
 #include <cmath>
 #include <bitset>
+#include <cstdio>
+
+// Logging macros - can be disabled individually or all at once
+// Define DISABLE_LOGGING to disable all logging
+// Or define individual levels: DISABLE_LOGD, DISABLE_LOGI, DISABLE_LOGW, DISABLE_LOGE
+#define DISABLE_LOGD 1
+
+#if defined(DISABLE_LOGGING) || defined(DISABLE_LOGD)
+    #define LOGD(fmt, ...) ((void)0)
+#else
+    #define LOGD(fmt, ...) printf("[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#endif
+
+#if defined(DISABLE_LOGGING) || defined(DISABLE_LOGI)
+    #define LOGI(fmt, ...) ((void)0)
+#else
+    #define LOGI(fmt, ...) printf("[INFO]  " fmt "\n", ##__VA_ARGS__)
+#endif
+
+#if defined(DISABLE_LOGGING) || defined(DISABLE_LOGW)
+    #define LOGW(fmt, ...) ((void)0)
+#else
+    #define LOGW(fmt, ...) printf("[WARN]  " fmt "\n", ##__VA_ARGS__)
+#endif
+
+#if defined(DISABLE_LOGGING) || defined(DISABLE_LOGE)
+    #define LOGE(fmt, ...) ((void)0)
+#else
+    #define LOGE(fmt, ...) fprintf(stderr, "[ERROR] " fmt "\n", ##__VA_ARGS__)
+#endif
 
 // RGB to NV12 Color Conversion Pipeline
 // Uses a compute shader to convert RGB swapchain images to NV12 format for video encoding
@@ -122,8 +151,7 @@ public:
         }
 
         isInitialized = true;
-        std::cout << "RGB to NV12 converter initialized (" << width << "x" << height 
-                  << ", swizzle=" << (needsSwizzle ? "yes" : "no") << ")" << std::endl;
+        LOGI("RGB to NV12 converter initialized (%ux%u, swizzle=%s)", width, height, needsSwizzle ? "yes" : "no");
         return true;
     }
 
@@ -206,7 +234,7 @@ public:
         vkCmdDispatch(cmdBuffer, groupCountX, groupCountY, 1);
 
         if (hasEncodeImage) {
-            std::cout << "hasEncodeImage" << std::endl;
+            LOGD("hasEncodeImage");
             // Transition Y/UV to TRANSFER_SRC, encode image planes to TRANSFER_DST
             VkImageMemoryBarrier copyBarriers[] = {
                 {
@@ -452,7 +480,7 @@ private:
 
             VkResult result = vkCreateImageView(device, &viewInfo, nullptr, &swapchainImageViews[i]);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create swapchain image view " << i << std::endl;
+                LOGE("Failed to create swapchain image view %zu", i);
                 return false;
             }
         }
@@ -491,7 +519,7 @@ private:
 
             VkResult result = vkCreateImage(device, &yImageInfo, nullptr, &img.imageY);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create Y plane image " << i << ": " << result << std::endl;
+                LOGE("Failed to create Y plane image %u: %d", i, result);
                 return false;
             }
 
@@ -508,7 +536,7 @@ private:
 
             result = vkAllocateMemory(device, &yAllocInfo, nullptr, &img.memoryY);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to allocate Y plane memory " << i << std::endl;
+                LOGE("Failed to allocate Y plane memory %u", i);
                 return false;
             }
 
@@ -533,7 +561,7 @@ private:
 
             result = vkCreateImage(device, &uvImageInfo, nullptr, &img.imageUV);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create UV plane image " << i << ": " << result << std::endl;
+                LOGE("Failed to create UV plane image %u: %d", i, result);
                 return false;
             }
 
@@ -550,7 +578,7 @@ private:
 
             result = vkAllocateMemory(device, &uvAllocInfo, nullptr, &img.memoryUV);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to allocate UV plane memory " << i << std::endl;
+                LOGE("Failed to allocate UV plane memory %u", i);
                 return false;
             }
 
@@ -567,7 +595,7 @@ private:
 
             result = vkCreateImageView(device, &yViewInfo, nullptr, &img.viewY);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create Y plane view " << i << std::endl;
+                LOGE("Failed to create Y plane view %u", i);
                 return false;
             }
 
@@ -582,7 +610,7 @@ private:
 
             result = vkCreateImageView(device, &uvViewInfo, nullptr, &img.viewUV);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create UV plane view " << i << std::endl;
+                LOGE("Failed to create UV plane view %u", i);
                 return false;
             }
 
@@ -606,7 +634,7 @@ private:
 
                 result = vkCreateImage(device, &encodeImageInfo, nullptr, &img.encodeImage);
                 if (result != VK_SUCCESS) {
-                    std::cerr << "Failed to create encode NV12 image " << i << ": " << result << std::endl;
+                    LOGE("Failed to create encode NV12 image %u: %d", i, result);
                     return false;
                 }
 
@@ -623,14 +651,14 @@ private:
 
                 result = vkAllocateMemory(device, &encodeAllocInfo, nullptr, &img.encodeMemory);
                 if (result != VK_SUCCESS) {
-                    std::cerr << "Failed to allocate encode image memory " << i << std::endl;
+                    LOGE("Failed to allocate encode image memory %u", i);
                     return false;
                 }
 
                 // Bind memory (regular binding for non-disjoint image)
                 result = vkBindImageMemory(device, img.encodeImage, img.encodeMemory, 0);
                 if (result != VK_SUCCESS) {
-                    std::cerr << "Failed to bind encode image memory " << i << ": " << result << std::endl;
+                    LOGE("Failed to bind encode image memory %u: %d", i, result);
                     return false;
                 }
 
@@ -646,14 +674,14 @@ private:
 
                 result = vkCreateImageView(device, &encodeViewInfo, nullptr, &img.encodeView);
                 if (result != VK_SUCCESS) {
-                    std::cerr << "Failed to create encode image view " << i << ": " << result << std::endl;
+                    LOGE("Failed to create encode image view %u: %d", i, result);
                     return false;
                 }
             }
         }
 
-        std::cout << "Created " << count << " Y+UV image pairs (" << width << "x" << height << ")"
-                  << (videoProfileList ? " with NV12 encode images" : "") << std::endl;
+        LOGI("Created %u Y+UV image pairs (%ux%u)%s", count, width, height,
+             videoProfileList ? " with NV12 encode images" : "");
         return true;
     }
 
@@ -679,7 +707,7 @@ private:
 
         VkResult result = vkCreateSampler(device, &samplerInfo, nullptr, &inputSampler);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create input sampler" << std::endl;
+            LOGE("Failed to create input sampler");
             return false;
         }
 
@@ -713,7 +741,7 @@ private:
 
         result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create descriptor set layout" << std::endl;
+            LOGE("Failed to create descriptor set layout");
             return false;
         }
 
@@ -735,7 +763,7 @@ private:
 
         result = vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create pipeline layout" << std::endl;
+            LOGE("Failed to create pipeline layout");
             return false;
         }
 
@@ -743,7 +771,7 @@ private:
         std::string shaderFile = shaderPath + "screenshot/rgb_to_nv12.comp.spv";
         std::ifstream file(shaderFile, std::ios::ate | std::ios::binary);
         if (!file.is_open()) {
-            std::cerr << "Failed to open shader file: " << shaderFile << std::endl;
+            LOGE("Failed to open shader file: %s", shaderFile.c_str());
             return false;
         }
 
@@ -762,7 +790,7 @@ private:
         VkShaderModule shaderModule;
         result = vkCreateShaderModule(device, &shaderModuleInfo, nullptr, &shaderModule);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create shader module" << std::endl;
+            LOGE("Failed to create shader module");
             return false;
         }
 
@@ -784,11 +812,11 @@ private:
         vkDestroyShaderModule(device, shaderModule, nullptr);
 
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create compute pipeline" << std::endl;
+            LOGE("Failed to create compute pipeline");
             return false;
         }
 
-        std::cout << "RGB to NV12 compute pipeline created" << std::endl;
+        LOGI("RGB to NV12 compute pipeline created");
         return true;
     }
 
@@ -815,7 +843,7 @@ private:
 
         VkResult result = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create descriptor pool" << std::endl;
+            LOGE("Failed to create descriptor pool");
             return false;
         }
 
@@ -832,7 +860,7 @@ private:
 
         result = vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data());
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to allocate descriptor sets" << std::endl;
+            LOGE("Failed to allocate descriptor sets");
             return false;
         }
 
@@ -884,7 +912,7 @@ private:
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
 
-        std::cout << "Created " << count << " descriptor sets for RGB to NV12 conversion" << std::endl;
+        LOGI("Created %u descriptor sets for RGB to NV12 conversion", count);
         return true;
     }
 };
@@ -1055,14 +1083,14 @@ public:
             !fp_vkGetPhysicalDeviceVideoCapabilitiesKHR || !fp_vkGetEncodedVideoSessionParametersKHR ||
             !fp_vkCmdBeginVideoCodingKHR || !fp_vkCmdEndVideoCodingKHR ||
             !fp_vkCmdEncodeVideoKHR || !fp_vkCmdControlVideoCodingKHR) {
-            std::cerr << "Failed to load Vulkan Video extension functions" << std::endl;
+            LOGE("Failed to load Vulkan Video extension functions");
             return false;
         }
         
         // Open output file
         outputFile.open(config.outputPath, std::ios::binary | std::ios::trunc);
         if (!outputFile.is_open()) {
-            std::cerr << "Failed to open output file: " << config.outputPath << std::endl;
+            LOGE("Failed to open output file: %s", config.outputPath.c_str());
             return false;
         }
         
@@ -1074,9 +1102,9 @@ public:
     void requestKeyframe() {
         if (config.gopSize > 1) {
             forceIDRRequested.store(true);
-            std::cout << "[GOP] User requested IDR for next frame" << std::endl;
+            LOGD("[GOP] User requested IDR for next frame");
         } else {
-            std::cout << "[GOP] User requested IDR, but gopSize==1 (noop)" << std::endl;
+            LOGD("[GOP] User requested IDR, but gopSize==1 (noop)");
         }
     }
     
@@ -1147,29 +1175,27 @@ public:
             physicalDevice, &videoProfile, &videoCapabilities);
         
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to query video capabilities: " << result << std::endl;
+            LOGE("Failed to query video capabilities: %d", result);
             return false;
         }
         
-        std::cout << "H.264 Encode Capabilities:" << std::endl;
-        std::cout << "  Max coded extent: " << videoCapabilities.maxCodedExtent.width 
-                  << "x" << videoCapabilities.maxCodedExtent.height << std::endl;
-        std::cout << "  Min coded extent: " << videoCapabilities.minCodedExtent.width 
-                  << "x" << videoCapabilities.minCodedExtent.height << std::endl;
-        std::cout << "  Max DPB slots: " << videoCapabilities.maxDpbSlots << std::endl;
-        std::cout << "  Max active refs: " << videoCapabilities.maxActiveReferencePictures << std::endl;
-        std::cout << "  Min bitstream alignment: " << videoCapabilities.minBitstreamBufferSizeAlignment << std::endl;
-        std::cout << "  Supported encode feedback flags: 0x" << std::hex << encodeCapabilities.supportedEncodeFeedbackFlags << std::dec << std::endl;
-        std::cout << "  Rate control modes: 0x" << std::hex << encodeCapabilities.rateControlModes << std::dec << std::endl;
-        std::cout << "  H.264 capabilities:" << std::endl;
-        std::cout << "    Max level: " << h264Capabilities.maxLevelIdc << std::endl;
-        std::cout << "    Max slice count: " << h264Capabilities.maxSliceCount << std::endl;
-        std::cout << "    Max PPicture L0 ref count: " << h264Capabilities.maxPPictureL0ReferenceCount << std::endl;
-        std::cout << "    Max BPicture L0 ref count: " << h264Capabilities.maxBPictureL0ReferenceCount << std::endl;
-        std::cout << "    Max L1 ref count: " << h264Capabilities.maxL1ReferenceCount << std::endl;
-        std::cout << "    Max temporal layer count: " << h264Capabilities.maxTemporalLayerCount << std::endl;
-        std::cout << "    Preferred max L0 ref count: " << h264Capabilities.maxQp << std::endl;
-        std::cout << "    Flags: 0x" << std::hex << h264Capabilities.flags << std::dec << std::endl;
+        LOGI("H.264 Encode Capabilities:");
+        LOGI("  Max coded extent: %ux%u", videoCapabilities.maxCodedExtent.width, videoCapabilities.maxCodedExtent.height);
+        LOGI("  Min coded extent: %ux%u", videoCapabilities.minCodedExtent.width, videoCapabilities.minCodedExtent.height);
+        LOGI("  Max DPB slots: %u", videoCapabilities.maxDpbSlots);
+        LOGI("  Max active refs: %u", videoCapabilities.maxActiveReferencePictures);
+        LOGI("  Min bitstream alignment: %lu", videoCapabilities.minBitstreamBufferSizeAlignment);
+        LOGI("  Supported encode feedback flags: 0x%x", encodeCapabilities.supportedEncodeFeedbackFlags);
+        LOGI("  Rate control modes: 0x%x", encodeCapabilities.rateControlModes);
+        LOGI("  H.264 capabilities:");
+        LOGI("    Max level: %d", h264Capabilities.maxLevelIdc);
+        LOGI("    Max slice count: %u", h264Capabilities.maxSliceCount);
+        LOGI("    Max PPicture L0 ref count: %u", h264Capabilities.maxPPictureL0ReferenceCount);
+        LOGI("    Max BPicture L0 ref count: %u", h264Capabilities.maxBPictureL0ReferenceCount);
+        LOGI("    Max L1 ref count: %u", h264Capabilities.maxL1ReferenceCount);
+        LOGI("    Max temporal layer count: %u", h264Capabilities.maxTemporalLayerCount);
+        LOGI("    Preferred max L0 ref count: %u", h264Capabilities.maxQp);
+        LOGI("    Flags: 0x%x", h264Capabilities.flags);
         
         return true;
     }
@@ -1182,10 +1208,10 @@ public:
         // This ensures we use the queue family that was actually created
         videoQueueFamilyIndex = vulkanDevice->queueFamilyIndices.videoEncode;
         
-        std::cout << "Using video encode queue family index: " << videoQueueFamilyIndex << std::endl;
+        LOGI("Using video encode queue family index: %u", videoQueueFamilyIndex);
         
         if (videoQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED || videoQueueFamilyIndex == 0xFFFFFFFF) {
-            std::cerr << "No video encode queue family found in device" << std::endl;
+            LOGE("No video encode queue family found in device");
             return false;
         }
         
@@ -1193,11 +1219,11 @@ public:
         vkGetDeviceQueue(device, videoQueueFamilyIndex, 0, &videoQueue);
         
         if (videoQueue == VK_NULL_HANDLE) {
-            std::cerr << "Failed to get video encode queue" << std::endl;
+            LOGE("Failed to get video encode queue");
             return false;
         }
         
-        std::cout << "Got video encode queue: " << videoQueue << std::endl;
+        LOGI("Got video encode queue: %p", (void*)videoQueue);
         
         // Create video session
         VkVideoSessionCreateInfoKHR sessionCreateInfo = {
@@ -1216,7 +1242,7 @@ public:
         
         VkResult result = fp_vkCreateVideoSessionKHR(device, &sessionCreateInfo, nullptr, &videoSession);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create video session: " << result << std::endl;
+            LOGE("Failed to create video session: %d", result);
             return false;
         }
         
@@ -1225,7 +1251,7 @@ public:
             return false;
         }
         
-        std::cout << "Video session created successfully" << std::endl;
+        LOGI("Video session created successfully");
         return true;
     }
     
@@ -1273,7 +1299,8 @@ public:
             sps.frame_crop_bottom_offset = cropBottom;
             sps.frame_crop_left_offset = 0;
             sps.frame_crop_top_offset = 0;
-            std::cout << "[SPS] Cropping enabled: right=" << cropRight << " (" << cropRight*2 << "px), bottom=" << cropBottom << " (" << cropBottom*2 << "px)" << std::endl;
+            LOGI("[SPS] Cropping enabled: right=%u (%upx), bottom=%u (%upx)",
+                 cropRight, cropRight*2, cropBottom, cropBottom*2);
         }
         
         sps.profile_idc = STD_VIDEO_H264_PROFILE_IDC_MAIN;
@@ -1336,11 +1363,11 @@ public:
         
         VkResult result = fp_vkCreateVideoSessionParametersKHR(device, &paramsCreateInfo, nullptr, &sessionParams);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create session parameters: " << result << std::endl;
+            LOGE("Failed to create session parameters: %d", result);
             return false;
         }
         
-        std::cout << "Session parameters created successfully" << std::endl;
+        LOGI("Session parameters created successfully");
         return true;
     }
     
@@ -1363,7 +1390,7 @@ public:
         
         VkResult result = vkCreateBuffer(device, &bufferInfo, nullptr, &bitstreamBuffer);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create bitstream buffer: " << result << std::endl;
+            LOGE("Failed to create bitstream buffer: %d", result);
             return false;
         }
         
@@ -1379,7 +1406,7 @@ public:
         
         result = vkAllocateMemory(device, &allocInfo, nullptr, &bitstreamMemory);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to allocate bitstream memory: " << result << std::endl;
+            LOGE("Failed to allocate bitstream memory: %d", result);
             return false;
         }
         
@@ -1387,7 +1414,7 @@ public:
         vkMapMemory(device, bitstreamMemory, 0, size, 0, &bitstreamMappedPtr);
         
         bitstreamBufferSize = size;
-        std::cout << "Bitstream buffer created: " << size << " bytes" << std::endl;
+        LOGI("Bitstream buffer created: %lu bytes", (unsigned long)size);
         return true;
     }
     
@@ -1411,11 +1438,11 @@ public:
         
         VkResult result = vkCreateQueryPool(device, &queryPoolInfo, nullptr, &queryPool);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create query pool: " << result << std::endl;
+            LOGE("Failed to create query pool: %d", result);
             return false;
         }
         
-        std::cout << "Query pool created" << std::endl;
+        LOGI("Query pool created");
         return true;
     }
     
@@ -1465,12 +1492,12 @@ public:
         size_t dataSize = 0;
         VkResult result = fp_vkGetEncodedVideoSessionParametersKHR(device, &getInfo, &feedback, &dataSize, nullptr);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to get SPS/PPS size: " << result << std::endl;
+            LOGE("Failed to get SPS/PPS size: %d", result);
             return false;
         }
         
         if (dataSize == 0) {
-            std::cerr << "SPS/PPS data size is 0" << std::endl;
+            LOGE("SPS/PPS data size is 0");
             return false;
         }
         
@@ -1478,16 +1505,16 @@ public:
         std::vector<uint8_t> paramData(dataSize);
         result = fp_vkGetEncodedVideoSessionParametersKHR(device, &getInfo, &feedback, &dataSize, paramData.data());
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to get SPS/PPS data: " << result << std::endl;
+            LOGE("Failed to get SPS/PPS data: %d", result);
             return false;
         }
         
         // Write to file - data already includes start codes (0x00 0x00 0x00 0x01)
         outputFile.write(reinterpret_cast<const char*>(paramData.data()), dataSize);
         
-        std::cout << "Wrote SPS/PPS to file: " << dataSize << " bytes" << std::endl;
-        std::cout << "  SPS written: " << (h264Feedback.hasStdSPSOverrides ? "with overrides" : "as-is") << std::endl;
-        std::cout << "  PPS written: " << (h264Feedback.hasStdPPSOverrides ? "with overrides" : "as-is") << std::endl;
+        LOGI("Wrote SPS/PPS to file: %zu bytes", dataSize);
+        LOGI("  SPS written: %s", h264Feedback.hasStdSPSOverrides ? "with overrides" : "as-is");
+        LOGI("  PPS written: %s", h264Feedback.hasStdPPSOverrides ? "with overrides" : "as-is");
         
         spsPpsWritten = true;
         return true;
@@ -1507,8 +1534,8 @@ public:
         uint32_t minRate = config.averageBitrate / 2;
         uint32_t range = (config.maxBitrate * 2) - minRate;
         auto bitrateRequest = minRate + static_cast<uint32_t>(range * factor);
-        std::cout << "[Bitrate] Frame " << streamFrameNum << ": Requesting bitrate " << bitrateRequest 
-                  << " bps (factor=" << factor << ")" << std::endl;
+        LOGD("[Bitrate] Frame %lu: Requesting bitrate %u bps (factor=%f)",
+             (unsigned long)streamFrameNum, bitrateRequest, factor);
         return bitrateRequest;
     }
 
@@ -1516,20 +1543,21 @@ public:
         if (!config.useVBR) return {0, 0};
 
         if (streamFrameNum < 400) {
-            std::cout << "[Bitrate] Frame " << streamFrameNum << ": Requesting bitrate " << config.averageBitrate
-                << std::endl;
+            LOGD("[Bitrate] Frame %lu: Requesting bitrate %u",
+                 (unsigned long)streamFrameNum, config.averageBitrate);
             return {config.averageBitrate, config.averageBitrate};
         }
-        std::cout << "[Bitrate] Frame " << streamFrameNum << ": Requesting bitrate " << config.averageBitrate * 2
-            << std::endl;
+        LOGD("[Bitrate] Frame %lu: Requesting bitrate %u",
+             (unsigned long)streamFrameNum, config.averageBitrate * 2);
         return {config.averageBitrate * 2, config.maxBitrate * 2};
     }
     
     // Check if next frame should be IDR
     bool isNextFrameIDR() const {
         bool result = (decodingOrderFrameNum == 0) || (config.gopSize > 0 && (decodingOrderFrameNum % config.gopSize == 0));
-        std::cout << "[GOP] Frame " << decodingOrderFrameNum << ": isNextFrameIDR = " << result 
-                  << " (gopSize=" << config.gopSize << ", mod=" << (decodingOrderFrameNum % config.gopSize) << ")" << std::endl;
+        LOGD("[GOP] Frame %lu: isNextFrameIDR = %d (gopSize=%u, mod=%lu)",
+             (unsigned long)decodingOrderFrameNum, result, config.gopSize,
+             (unsigned long)(decodingOrderFrameNum % config.gopSize));
         return result;
     }
     
@@ -1581,7 +1609,7 @@ public:
             
             VkResult result = vkCreateImage(device, &imageInfo, nullptr, &slot.image);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create DPB image " << i << ": " << result << std::endl;
+                LOGE("Failed to create DPB image %u: %d", i, result);
                 return false;
             }
             
@@ -1598,7 +1626,7 @@ public:
             
             result = vkAllocateMemory(device, &allocInfo, nullptr, &slot.memory);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to allocate DPB image memory " << i << std::endl;
+                LOGE("Failed to allocate DPB image memory %u", i);
                 return false;
             }
             
@@ -1616,73 +1644,73 @@ public:
             
             result = vkCreateImageView(device, &viewInfo, nullptr, &slot.view);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to create DPB image view " << i << std::endl;
+                LOGE("Failed to create DPB image view %u", i);
                 return false;
             }
             
             slot.inUse = false;
         }
         
-        std::cout << "Created " << numDPBSlots << " DPB images" << std::endl;
+        LOGI("Created %u DPB images", numDPBSlots);
         return true;
     }
     
     // Full initialization sequence - call after initialize()
     bool setupVideoSession() {
         if (!isInitialized) {
-            std::cerr << "Encoder not initialized" << std::endl;
+            LOGE("Encoder not initialized");
             return false;
         }
         
         // Step 1: Query capabilities
         if (!queryCapabilities()) {
-            std::cerr << "Failed to query video capabilities" << std::endl;
+            LOGE("Failed to query video capabilities");
             return false;
         }
         
         // Step 2: Create video session
         if (!createVideoSession()) {
-            std::cerr << "Failed to create video session" << std::endl;
+            LOGE("Failed to create video session");
             return false;
         }
         
         // Step 3: Create session parameters (SPS/PPS)
         if (!createSessionParameters()) {
-            std::cerr << "Failed to create session parameters" << std::endl;
+            LOGE("Failed to create session parameters");
             return false;
         }
         
         // Step 4: Create DPB images
         if (!createDPBImages()) {
-            std::cerr << "Failed to create DPB images" << std::endl;
+            LOGE("Failed to create DPB images");
             return false;
         }
         
         // Step 5: Create bitstream buffer
         if (!createBitstreamBuffer()) {
-            std::cerr << "Failed to create bitstream buffer" << std::endl;
+            LOGE("Failed to create bitstream buffer");
             return false;
         }
         
         // Step 6: Create query pool
         if (!createQueryPool()) {
-            std::cerr << "Failed to create query pool" << std::endl;
+            LOGE("Failed to create query pool");
             return false;
         }
         
         // Step 7: Create command pool for video queue
         if (!createVideoCommandPool()) {
-            std::cerr << "Failed to create video command pool" << std::endl;
+            LOGE("Failed to create video command pool");
             return false;
         }
         
         // Step 8: Create encode command buffer and sync objects
         if (!createEncodeSyncObjects()) {
-            std::cerr << "Failed to create encode sync objects" << std::endl;
+            LOGE("Failed to create encode sync objects");
             return false;
         }
         
-        std::cout << "Video encode session fully initialized" << std::endl;
+        LOGI("Video encode session fully initialized");
         return true;
     }
     
@@ -1695,12 +1723,12 @@ public:
                      uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
         if (!isReady()) return false;
 
-        std::cout << "[Encode] Starting frame " << decodingOrderFrameNum << "/" << streamFrameNum << std::endl;
+        LOGD("[Encode] Starting frame %lu/%lu", (unsigned long)decodingOrderFrameNum, (unsigned long)streamFrameNum);
         
         // Wait for previous encode to complete
-        std::cout << "[Encode] Waiting for previous encode fence..." << std::endl;
+        LOGD("[Encode] Waiting for previous encode fence...");
         vkWaitForFences(device, 1, &encodeFence, VK_TRUE, UINT64_MAX);
-        std::cout << "[Encode] Previous fence signaled, resetting..." << std::endl;
+        LOGD("[Encode] Previous fence signaled, resetting...");
         vkResetFences(device, 1, &encodeFence);
         
         // Reset command buffer
@@ -1714,11 +1742,11 @@ public:
         VK_CHECK_RESULT(vkBeginCommandBuffer(encodeCommandBuffer, &beginInfo));
         
         // Record encode commands with queue family ownership transfer if needed
-        std::cout << "[Encode] Recording encode commands..." << std::endl;
+        LOGD("[Encode] Recording encode commands...");
         recordEncodeCommands(encodeCommandBuffer, srcImage, srcView, srcQueueFamily);
         
         VK_CHECK_RESULT(vkEndCommandBuffer(encodeCommandBuffer));
-        std::cout << "[Encode] Command buffer recorded" << std::endl;
+        LOGD("[Encode] Command buffer recorded");
         
         // Submit encode command buffer
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -1733,24 +1761,24 @@ public:
             .pSignalSemaphores = nullptr,
         };
         
-        std::cout << "[Encode] Submitting to video queue (waitSemaphore=" 
-                  << (waitSemaphore != VK_NULL_HANDLE ? "yes" : "no") << ")..." << std::endl;
+        LOGD("[Encode] Submitting to video queue (waitSemaphore=%s)...",
+             waitSemaphore != VK_NULL_HANDLE ? "yes" : "no");
         VkResult result = vkQueueSubmit(videoQueue, 1, &submitInfo, encodeFence);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to submit encode command buffer: " << result << std::endl;
+            LOGE("Failed to submit encode command buffer: %d", result);
             return false;
         }
-        std::cout << "[Encode] Submitted successfully" << std::endl;
+        LOGD("[Encode] Submitted successfully");
         
         // Wait for encode to complete and read back results
-        std::cout << "[Encode] Waiting for encode fence..." << std::endl;
+        LOGD("[Encode] Waiting for encode fence...");
         result = vkWaitForFences(device, 1, &encodeFence, VK_TRUE, UINT64_MAX);
-        std::cout << "[Encode] Encode fence signaled (result=" << result << ")" << std::endl;
+        LOGD("[Encode] Encode fence signaled (result=%d)", result);
         
         // Also wait on the queue to ensure all work is done
-        std::cout << "[Encode] Waiting for video queue idle..." << std::endl;
+        LOGD("[Encode] Waiting for video queue idle...");
         result = vkQueueWaitIdle(videoQueue);
-        std::cout << "[Encode] Video queue idle (result=" << result << ")" << std::endl;
+        LOGD("[Encode] Video queue idle (result=%d)", result);
         
         // Query encode results
         // Try reading raw bytes first to see what the driver actually writes
@@ -1760,18 +1788,22 @@ public:
         result = vkGetQueryPoolResults(device, queryPool, 0, 1, sizeof(rawData), rawData,
             sizeof(rawData), VK_QUERY_RESULT_WITH_STATUS_BIT_KHR);
         
-        std::cout << "[Encode] Raw query result: " << result << std::endl;
-        std::cout << "[Encode] Raw bytes: ";
+        LOGD("[Encode] Raw query result: %d", result);
+#ifndef DISABLE_LOGD
+        // Build hex dump string
+        char hexBuf[96]; // 32 bytes * 3 chars per byte
+        char* p = hexBuf;
         for (int i = 0; i < 32; i++) {
-            printf("%02x ", rawData[i]);
+            p += sprintf(p, "%02x ", rawData[i]);
         }
-        std::cout << std::endl;
+        LOGD("[Encode] Raw bytes: %s", hexBuf);
+#endif
         
         if (result == VK_NOT_READY) {
             // Try with 64-bit flag
             result = vkGetQueryPoolResults(device, queryPool, 0, 1, sizeof(rawData), rawData,
                 sizeof(rawData), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_STATUS_BIT_KHR);
-            std::cout << "[Encode] With 64-bit: result=" << result << std::endl;
+            LOGD("[Encode] With 64-bit: result=%d", result);
         }
         
         // Parse results - format depends on flags used
@@ -1785,8 +1817,8 @@ public:
             int32_t status;
         };
         EncodeFeedback32* fb32 = reinterpret_cast<EncodeFeedback32*>(rawData);
-        std::cout << "[Encode] As 32-bit: offset=" << fb32->offset << ", bytes=" << fb32->bytesWritten 
-                  << ", status=" << fb32->status << std::endl;
+        LOGD("[Encode] As 32-bit: offset=%u, bytes=%u, status=%d",
+             fb32->offset, fb32->bytesWritten, fb32->status);
         
         // Also try 64-bit interpretation
         struct EncodeFeedback64 {
@@ -1795,23 +1827,22 @@ public:
             int64_t status;
         };
         EncodeFeedback64* fb64 = reinterpret_cast<EncodeFeedback64*>(rawData);
-        std::cout << "[Encode] As 64-bit: offset=" << fb64->offset << ", bytes=" << fb64->bytesWritten 
-                  << ", status=" << fb64->status << std::endl;
+        LOGD("[Encode] As 64-bit: offset=%lu, bytes=%lu, status=%ld",
+             (unsigned long)fb64->offset, (unsigned long)fb64->bytesWritten, (long)fb64->status);
         
         // If query not ready, something went wrong with the encode
         if (result == VK_NOT_READY) {
-            std::cerr << "[Encode] Query not ready after GPU completed - encode may have been skipped" << std::endl;
+            LOGE("[Encode] Query not ready after GPU completed - encode may have been skipped");
             // Check if maybe the status field has useful info
-            std::cerr << "[Encode] Status from raw data: 32-bit=" << fb32->status 
-                      << ", 64-bit=" << fb64->status << std::endl;
+            LOGE("[Encode] Status from raw data: 32-bit=%d, 64-bit=%ld",
+                 fb32->status, (long)fb64->status);
             return false;
         }
         
         // Check status from 32-bit interpretation (without VK_QUERY_RESULT_64_BIT)
         if (fb32->status != VK_QUERY_RESULT_STATUS_COMPLETE_KHR) {
-            std::cerr << "[Encode] Encode status not complete: " << fb32->status 
-                      << " (COMPLETE=" << VK_QUERY_RESULT_STATUS_COMPLETE_KHR 
-                      << ", ERROR=" << VK_QUERY_RESULT_STATUS_ERROR_KHR << ")" << std::endl;
+            LOGE("[Encode] Encode status not complete: %d (COMPLETE=%d, ERROR=%d)",
+                 fb32->status, VK_QUERY_RESULT_STATUS_COMPLETE_KHR, VK_QUERY_RESULT_STATUS_ERROR_KHR);
             // Still continue to see what data we got
         }
         
@@ -1824,9 +1855,8 @@ public:
                 writeSpsPps();
             }
             
-            std::cout << "[Encode] Writing " << fb32->bytesWritten << " bytes at offset " << fb32->offset;
-            if (isIDR) std::cout << " (IDR frame)";
-            std::cout << std::endl;
+            LOGD("[Encode] Writing %u bytes at offset %u%s",
+                 fb32->bytesWritten, fb32->offset, isIDR ? " (IDR frame)" : "");
             
             const uint8_t* data = static_cast<const uint8_t*>(bitstreamMappedPtr) + fb32->offset;
             writeNALUnit(data, static_cast<size_t>(fb32->bytesWritten));
@@ -1955,10 +1985,9 @@ private:
     bool isPFrame() const {
         bool notIDR = !isNextFrameIDR();
         bool result = config.gopSize > 1 && notIDR && decodingOrderFrameNum > 0;
-        std::cout << "[GOP] Frame " << decodingOrderFrameNum << ": isPFrame = " << result 
-                  << " (gopSize>1: " << (config.gopSize > 1) << ", notIDR: " << notIDR 
-                  << ", frameCounter>0: " << (decodingOrderFrameNum > 0) 
-                  << ", lastRefSlot: " << lastRefSlotIndex << ")" << std::endl;
+        LOGD("[GOP] Frame %lu: isPFrame = %d (gopSize>1: %d, notIDR: %d, frameCounter>0: %d, lastRefSlot: %d)",
+             (unsigned long)decodingOrderFrameNum, result, (config.gopSize > 1), notIDR,
+             (decodingOrderFrameNum > 0), lastRefSlotIndex);
         return result;
     }
     
@@ -2000,7 +2029,7 @@ private:
             
             VkResult result = vkAllocateMemory(device, &allocInfo, nullptr, &sessionMemory[i]);
             if (result != VK_SUCCESS) {
-                std::cerr << "Failed to allocate video session memory: " << result << std::endl;
+                LOGE("Failed to allocate video session memory: %d", result);
                 return false;
             }
             
@@ -2016,11 +2045,11 @@ private:
         
         VkResult result = fp_vkBindVideoSessionMemoryKHR(device, videoSession, memReqCount, bindInfos.data());
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to bind video session memory: " << result << std::endl;
+            LOGE("Failed to bind video session memory: %d", result);
             return false;
         }
         
-        std::cout << "Video session memory bound (" << memReqCount << " allocations)" << std::endl;
+        LOGI("Video session memory bound (%u allocations)", memReqCount);
         return true;
     }
     
@@ -2034,11 +2063,11 @@ private:
         
         VkResult result = vkCreateCommandPool(device, &poolInfo, nullptr, &videoCommandPool);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create video command pool: " << result << std::endl;
+            LOGE("Failed to create video command pool: %d", result);
             return false;
         }
         
-        std::cout << "Video command pool created" << std::endl;
+        LOGI("Video command pool created");
         return true;
     }
     
@@ -2054,7 +2083,7 @@ private:
         
         VkResult result = vkAllocateCommandBuffers(device, &allocInfo, &encodeCommandBuffer);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to allocate encode command buffer: " << result << std::endl;
+            LOGE("Failed to allocate encode command buffer: %d", result);
             return false;
         }
         
@@ -2066,7 +2095,7 @@ private:
         
         result = vkCreateFence(device, &fenceInfo, nullptr, &encodeFence);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create encode fence: " << result << std::endl;
+            LOGE("Failed to create encode fence: %d", result);
             return false;
         }
         
@@ -2077,11 +2106,11 @@ private:
         
         result = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &encodeSemaphore);
         if (result != VK_SUCCESS) {
-            std::cerr << "Failed to create encode semaphore: " << result << std::endl;
+            LOGE("Failed to create encode semaphore: %d", result);
             return false;
         }
         
-        std::cout << "Encode sync objects created" << std::endl;
+        LOGI("Encode sync objects created");
         return true;
     }
     
@@ -2092,29 +2121,28 @@ private:
     // If srcQueueFamily differs from video queue family, we need to acquire ownership
     void recordEncodeCommands(VkCommandBuffer cmdBuffer, VkImage srcImage, VkImageView srcView,
                               uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
-        std::cout << "\n========== ENCODE FRAME " << decodingOrderFrameNum << "/" << streamFrameNum << " ==========" <<
-            std::endl;
-        std::cout << "[GOP] Config: gopSize=" << config.gopSize << ", qp=" << config.qp << std::endl;
-        std::cout << "[GOP] State: lastRefSlot=" << lastRefSlotIndex 
-                  << ", lastRefFrameNum=" << lastRefFrameNum 
-                  << ", lastRefPOC=" << lastRefPicOrderCnt << std::endl;
+        LOGD("\n========== ENCODE FRAME %lu/%lu ==========",
+             (unsigned long)decodingOrderFrameNum, (unsigned long)streamFrameNum);
+        LOGD("[GOP] Config: gopSize=%u, qp=%u", config.gopSize, config.qp);
+        LOGD("[GOP] State: lastRefSlot=%d, lastRefFrameNum=%u, lastRefPOC=%d",
+             lastRefSlotIndex, lastRefFrameNum, lastRefPicOrderCnt);
         
         // Apply forced IDR request if present (additional to periodic GOP keyframes)
         bool forcedIDR = forceIDRRequested.exchange(false) && (config.gopSize > 1);
         if (forcedIDR) {
-            std::cout << "[GOP] Forcing IDR for this frame per user request" << std::endl;
+            LOGD("[GOP] Forcing IDR for this frame per user request");
         }
         bool isIDR = forcedIDR || isNextFrameIDR();
         currentFrameIsIDR = isIDR;
         bool isP = (config.gopSize > 1) && !isIDR && decodingOrderFrameNum > 0;
         
-        std::cout << "[GOP] Frame type determined: IDR=" << isIDR << ", P=" << isP 
-                  << " => " << (isIDR ? "IDR" : (isP ? "P-frame" : "I-frame")) << std::endl;
+        LOGD("[GOP] Frame type determined: IDR=%d, P=%d => %s",
+             isIDR, isP, (isIDR ? "IDR" : (isP ? "P-frame" : "I-frame")));
         
         // Determine DPB slot for current reconstructed frame
         // For P-frames, use ping-pong between slot 0 and 1
         int32_t slotIndex = (config.gopSize > 1) ? static_cast<int32_t>(decodingOrderFrameNum % 2) : 0;
-        std::cout << "[GOP] Using DPB slot: " << slotIndex << std::endl;
+        LOGD("[GOP] Using DPB slot: %d", slotIndex);
         
         // DPB slot reference
         DPBSlot& dpbSlot = dpbSlots[slotIndex];
@@ -2193,7 +2221,7 @@ private:
         // This ensures the reference data is properly synchronized for reading
         if (isP && lastRefSlotIndex >= 0) {
             DPBSlot& refDpbSlot = dpbSlots[lastRefSlotIndex];
-            std::cout << "[GOP] Adding reference DPB barriers for slot " << lastRefSlotIndex << std::endl;
+            LOGD("[GOP] Adding reference DPB barriers for slot %d", lastRefSlotIndex);
             
             // Reference DPB image plane 0 barrier - transition from DPB layout to DPB layout
             // (preserves content, just ensures synchronization)
@@ -2248,7 +2276,7 @@ private:
         sliceHeader.cabac_init_idc = STD_VIDEO_H264_CABAC_INIT_IDC_0;
         sliceHeader.disable_deblocking_filter_idc = STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED;
         
-        std::cout << "[GOP] Slice type: " << (int)sliceHeader.slice_type << "(" << (isP ? "P" : "I") << "-slice)" << std::endl;        
+        LOGD("[GOP] Slice type: %d(%s-slice)", (int)sliceHeader.slice_type, isP ? "P" : "I");        
         // Build reference lists for P-frames
         StdVideoEncodeH264ReferenceListsInfo refLists = {};
         // Initialize all entries to NO_REFERENCE to satisfy VUID 08339
@@ -2261,12 +2289,12 @@ private:
             refLists.RefPicList0[0] = static_cast<uint8_t>(lastRefSlotIndex);  // DPB slot index of reference frame
             refLists.num_ref_idx_l0_active_minus1 = 0;  // 1 reference in L0
             refLists.num_ref_idx_l1_active_minus1 = 0;
-            std::cout << "[GOP] Building reference list: L0[0]=" << (int)refLists.RefPicList0[0] << ", num_ref_l0=1" << std::endl;
+            LOGD("[GOP] Building reference list: L0[0]=%d, num_ref_l0=1", (int)refLists.RefPicList0[0]);
         } else {
             // No references used; keep lists filled with NO_REFERENCE and set counts to 0
             refLists.num_ref_idx_l0_active_minus1 = 0;
             refLists.num_ref_idx_l1_active_minus1 = 0;
-            std::cout << "[GOP] No reference list (I-frame or no previous ref)" << std::endl;
+            LOGD("[GOP] No reference list (I-frame or no previous ref)");
         }
         
         StdVideoEncodeH264PictureInfo stdPicInfo = {};
@@ -2317,8 +2345,9 @@ private:
         stdPicInfo.temporal_id = 0;
         stdPicInfo.pRefLists = (isP && lastRefSlotIndex >= 0) ? &refLists : nullptr;
         
-        std::cout << "[GOP] Picture info: IdrFlag=" << (int)stdPicInfo.flags.IdrPicFlag << ", primary_pic_type=" << (int)stdPicInfo.primary_pic_type                   << ", frame_num=" << stdPicInfo.frame_num
-                          << ", POC=" << stdPicInfo.PicOrderCnt                  << ", pRefLists=" << (stdPicInfo.pRefLists ? "SET" : "NULL") << std::endl;
+        LOGD("[GOP] Picture info: IdrFlag=%d, primary_pic_type=%d, frame_num=%u, POC=%d, pRefLists=%s",
+             (int)stdPicInfo.flags.IdrPicFlag, (int)stdPicInfo.primary_pic_type,
+             stdPicInfo.frame_num, stdPicInfo.PicOrderCnt, (stdPicInfo.pRefLists ? "SET" : "NULL"));
         
         // H.264 NALU slice info
         VkVideoEncodeH264NaluSliceInfoKHR sliceInfo = {
@@ -2391,7 +2420,7 @@ private:
         VkVideoReferenceSlotInfoKHR inputRefSlot = {};
         
         if (isP && lastRefSlotIndex >= 0) {
-            std::cout << "[GOP] Setting up input reference from DPB slot " << lastRefSlotIndex << std::endl;            // Get the reference DPB slot
+            LOGD("[GOP] Setting up input reference from DPB slot %d", lastRefSlotIndex);            // Get the reference DPB slot
             DPBSlot& refSlot = dpbSlots[lastRefSlotIndex];
             
             // Reference picture resource
@@ -2413,9 +2442,8 @@ private:
             refStdInfo.long_term_frame_idx = 0;
             refStdInfo.temporal_id = 0;
             
-            std::cout << "[GOP] Input ref: FrameNum=" << refStdInfo.FrameNum 
-                      << ", POC=" << refStdInfo.PicOrderCnt 
-                      << ", picType=" << (int)refStdInfo.primary_pic_type << std::endl;            
+            LOGD("[GOP] Input ref: FrameNum=%u, POC=%d, picType=%d",
+                 refStdInfo.FrameNum, refStdInfo.PicOrderCnt, (int)refStdInfo.primary_pic_type);            
             refH264DpbSlotInfo = {
                 .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
                 .pNext = nullptr,
@@ -2430,8 +2458,7 @@ private:
                 .pPictureResource = &refPicResource,
             };
         } else {
-            std::cout << "[GOP] No input reference (isP=" << isP << ", lastRefSlot=" << lastRefSlotIndex << ")" <<
-                std::endl;
+            LOGD("[GOP] No input reference (isP=%d, lastRefSlot=%d)", isP, lastRefSlotIndex);
         }
         
         // Encode info
@@ -2458,7 +2485,7 @@ private:
         if (isP && lastRefSlotIndex >= 0) {
             // P-frame: Include input reference slot
             beginSlots[beginSlotCount++] = inputRefSlot;
-            std::cout << "[GOP] Begin coding: including input ref slot " << lastRefSlotIndex << std::endl;
+            LOGD("[GOP] Begin coding: including input ref slot %d", lastRefSlotIndex);
         }
         
         // Output/Setup slot MUST be included in the bound reference slots so validation passes
@@ -2501,7 +2528,7 @@ private:
                 // If it's a new bitrate, we just log here. 
                 // We'll apply it using vkCmdControlVideoCodingKHR inside the coding scope.
                 if (sessionReset) {
-                    std::cout << "[Encode] VBR Bitrate Update Detected: " << currentRate << " bps" << std::endl;
+                    LOGD("[Encode] VBR Bitrate Update Detected: %u bps", currentRate);
                 }
             }
         }
@@ -2576,7 +2603,7 @@ private:
              beginInfo.pNext = &currentRCInfo;
         }
 
-        std::cout << "[GOP] Begin coding with " << beginSlotCount << " reference slot(s)" << std::endl;
+        LOGD("[GOP] Begin coding with %u reference slot(s)", beginSlotCount);
         
         fp_vkCmdBeginVideoCodingKHR(cmdBuffer, &beginInfo);
         
@@ -2603,19 +2630,19 @@ private:
             };
             fp_vkCmdControlVideoCodingKHR(cmdBuffer, &controlInfo);
             
-            std::cout << "[Encode] VBR Bitrate Updated to " << rateControlLayerInfo.averageBitrate << " bps" << std::endl;
+            LOGD("[Encode] VBR Bitrate Updated to %lu bps", rateControlLayerInfo.averageBitrate);
             currentAppliedBitrate = rateControlLayerInfo.averageBitrate;
         }
         
         // Begin query - use index 0
         // Note: For video encode feedback queries, we use the query within the video coding scope
-        std::cout << "[Encode] Beginning query..." << std::endl;
+        LOGD("[Encode] Beginning query...");
         vkCmdBeginQuery(cmdBuffer, queryPool, 0, 0);
         
         // Encode
-        std::cout << "[Encode] Recording vkCmdEncodeVideoKHR..." << std::endl;
+        LOGD("[Encode] Recording vkCmdEncodeVideoKHR...");
         fp_vkCmdEncodeVideoKHR(cmdBuffer, &encodeInfo);
-        std::cout << "[Encode] Encode command recorded" << std::endl;
+        LOGD("[Encode] Encode command recorded");
 
         if (slotIndex >= 0 && slotIndex < MAX_DPB_SLOTS) {
             activeSlotsInSession[slotIndex] = true;
@@ -2623,7 +2650,7 @@ private:
         
         // End query
         vkCmdEndQuery(cmdBuffer, queryPool, 0);
-        std::cout << "[Encode] Query ended" << std::endl;
+        LOGD("[Encode] Query ended");
         
         // Update reference tracking for next P-frame
         // Store current frame as reference for next frame
@@ -2632,10 +2659,10 @@ private:
         lastRefPicOrderCnt = stdPicInfo.PicOrderCnt;
         lastRefPicType = stdPicInfo.primary_pic_type;
 
-        std::cout << "[GOP] Updated reference tracking: slot=" << lastRefSlotIndex << ", frameNum=" << lastRefFrameNum
-            << ", POC=" << lastRefPicOrderCnt << ", picType=" << (int)lastRefPicType << std::endl;
-        std::cout << "========== END ENCODE FRAME " << decodingOrderFrameNum << "/" << streamFrameNum << " =========="
-            << std::endl;
+        LOGD("[GOP] Updated reference tracking: slot=%d, frameNum=%u, POC=%d, picType=%d",
+             lastRefSlotIndex, lastRefFrameNum, lastRefPicOrderCnt, (int)lastRefPicType);
+        LOGD("========== END ENCODE FRAME %lu/%lu ==========",
+             (unsigned long)decodingOrderFrameNum, (unsigned long)streamFrameNum);
         
         // End video coding
         VkVideoEndCodingInfoKHR endInfo = {
@@ -2782,11 +2809,11 @@ public:
 		bool sync2 = vulkanDevice->extensionSupported(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
 		bool maintenance1 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME);
 
-	    std::cout << "Vulkan Video Encoding Support:" << std::endl;
-	    std::cout << "  Base Video Queue: " << (videoQueue ? "Yes" : "No") << std::endl;
-	    std::cout << "  Encode Queue:     " << (encodeQueue ? "Yes" : "No") << std::endl;
-		std::cout << "  Synchronization2: " << (sync2 ? "Yes" : "No") << std::endl;
-		std::cout << "  Maintenance1:     " << (maintenance1 ? "Yes" : "No") << std::endl;
+	    LOGI("Vulkan Video Encoding Support:");
+	    LOGI("  Base Video Queue: %s", videoQueue ? "Yes" : "No");
+	    LOGI("  Encode Queue:     %s", encodeQueue ? "Yes" : "No");
+		LOGI("  Synchronization2: %s", sync2 ? "Yes" : "No");
+		LOGI("  Maintenance1:     %s", maintenance1 ? "Yes" : "No");
 
 	    // Check for specific encoders
         if (videoQueue && encodeQueue && sync2 && maintenance1) {
@@ -2795,13 +2822,13 @@ public:
             enabledDeviceExtensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
             enabledDeviceExtensions.push_back(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME);
 
-            std::cout << "  Supported Encoders:" << std::endl;
+            LOGI("  Supported Encoders:");
             bool h264 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
             bool h265 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME);
             bool av1 = vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME);
-            std::cout << "    H.264: " << (h264 ? "Yes" : "No") << std::endl;
-            std::cout << "    H.265: " << (h265 ? "Yes" : "No") << std::endl;
-            std::cout << "    AV1:   " << (av1 ? "Yes" : "No") << std::endl;
+            LOGI("    H.264: %s", h264 ? "Yes" : "No");
+            LOGI("    H.265: %s", h265 ? "Yes" : "No");
+            LOGI("    AV1:   %s", av1 ? "Yes" : "No");
 
             if (h264) {
                 enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
@@ -2859,7 +2886,7 @@ public:
 		viewInfo.subresourceRange.layerCount = 1;
 		VK_CHECK_RESULT(vkCreateImageView(device, &viewInfo, nullptr, &offscreen.colorView));
 
-		std::cout << "Offscreen color attachment created: " << width << "x" << height << std::endl;
+		LOGI("Offscreen color attachment created: %ux%u", width, height);
 	}
 
 	// Setup render pass for headless mode with TRANSFER_SRC_OPTIMAL final layout
@@ -2921,7 +2948,7 @@ public:
 		renderPassInfo.pDependencies = dependencies.data();
 
 		VK_CHECK_RESULT(vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass));
-		std::cout << "Headless render pass created" << std::endl;
+		LOGI("Headless render pass created");
 	}
 
 	// Setup framebuffer for headless mode
@@ -2938,20 +2965,20 @@ public:
 		fbInfo.layers = 1;
 
 		VK_CHECK_RESULT(vkCreateFramebuffer(device, &fbInfo, nullptr, &offscreen.framebuffer));
-		std::cout << "Headless framebuffer created: " << width << "x" << height << std::endl;
+		LOGI("Headless framebuffer created: %ux%u", width, height);
 	}
 
 	// Headless render loop - renders fixed number of frames and encodes them
 	void renderLoopHeadless()
 	{
-		std::cout << "Starting headless rendering of " << HEADLESS_FRAME_COUNT << " frames..." << std::endl;
+		LOGI("Starting headless rendering of %u frames...", HEADLESS_FRAME_COUNT);
 		
 		auto startTime = std::chrono::high_resolution_clock::now();
 		
 		for (headlessFramesRendered = 0; headlessFramesRendered < HEADLESS_FRAME_COUNT; headlessFramesRendered++) {
 			// Progress output every 100 frames
 			if (headlessFramesRendered % 100 == 0) {
-				std::cout << "Rendering frame " << headlessFramesRendered << "/" << HEADLESS_FRAME_COUNT << std::endl;
+				LOGI("Rendering frame %u/%u", headlessFramesRendered, HEADLESS_FRAME_COUNT);
 			}
 			
 			// Update uniforms (animate camera slightly for visual verification)
@@ -2983,11 +3010,11 @@ public:
 		auto endTime = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
 		
-		std::cout << "Headless rendering complete!" << std::endl;
-		std::cout << "  Total frames: " << HEADLESS_FRAME_COUNT << std::endl;
-		std::cout << "  Total time: " << duration << "ms" << std::endl;
-		std::cout << "  Average FPS: " << (HEADLESS_FRAME_COUNT * 1000.0 / duration) << std::endl;
-		std::cout << "  Encoded frames: " << encodedFrameCount << std::endl;
+		LOGI("Headless rendering complete!");
+		LOGI("  Total frames: %u", HEADLESS_FRAME_COUNT);
+		LOGI("  Total time: %ldms", (long)duration);
+		LOGI("  Average FPS: %.2f", (HEADLESS_FRAME_COUNT * 1000.0 / duration));
+		LOGI("  Encoded frames: %lu", encodedFrameCount);
 		
 		vkDeviceWaitIdle(device);
 	}
@@ -3168,14 +3195,14 @@ public:
 		// Check if the device supports blitting from optimal images (the swapchain images are in optimal format)
 		vkGetPhysicalDeviceFormatProperties(physicalDevice, swapChain.colorFormat, &formatProps);
 		if (!(formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
-			std::cerr << "Device does not support blitting from optimal tiled images, using copy instead of blit!" << std::endl;
+			LOGW("Device does not support blitting from optimal tiled images, using copy instead of blit!");
 			supportsBlit = false;
 		}
 
 		// Check if the device supports blitting to linear images
 		vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8G8B8A8_UNORM, &formatProps);
 		if (!(formatProps.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
-			std::cerr << "Device does not support blitting to linear tiled images, using copy instead of blit!" << std::endl;
+			LOGW("Device does not support blitting to linear tiled images, using copy instead of blit!");
 			supportsBlit = false;
 		}
 
@@ -3356,7 +3383,7 @@ public:
 		}
 		file.close();
 
-		std::cout << "Screenshot saved to disk" << std::endl;
+		LOGI("Screenshot saved to disk");
 
 		// Clean up resources
 		vkUnmapMemory(device, dstImageMemory);
@@ -3386,7 +3413,7 @@ public:
 	// Prepare for headless rendering
 	void prepareHeadless()
 	{
-		std::cout << "Preparing headless rendering at " << width << "x" << height << std::endl;
+		LOGI("Preparing headless rendering at %ux%u", width, height);
 		
 		// Create command pool (normally done in base class but we need to do it here)
 		VkCommandPoolCreateInfo cmdPoolInfo = vks::initializers::commandPoolCreateInfo();
@@ -3442,7 +3469,7 @@ public:
 		// Check if video encoding is supported
 		if (!vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME) ||
 		    !vulkanDevice->extensionSupported(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME)) {
-			std::cout << "H.264 video encoding or maintenance1 not supported, skipping encoder setup" << std::endl;
+			LOGW("H.264 video encoding or maintenance1 not supported, skipping encoder setup");
 			return;
 		}
 
@@ -3451,8 +3478,8 @@ public:
 		uint32_t alignedHeight = (height % 2 == 0) ? height : height + 1;
 
 		if (alignedWidth != width || alignedHeight != height) {
-			std::cout << "Note: Aligning video encoding resources from " << width << "x" << height 
-			          << " to " << alignedWidth << "x" << alignedHeight << " (required for 4:2:0 format)" << std::endl;
+			LOGI("Note: Aligning video encoding resources from %ux%u to %ux%u (required for 4:2:0 format)",
+			     width, height, alignedWidth, alignedHeight);
 		}
 
 		// Initialize H264 encoder
@@ -3466,12 +3493,12 @@ public:
 		encoderConfig.useVBR = false;  // CQP for headless
 
 		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
-			std::cerr << "Failed to initialize H264 encoder" << std::endl;
+			LOGE("Failed to initialize H264 encoder");
 			return;
 		}
 
 		if (!h264Encoder.setupProfiles()) {
-			std::cerr << "Failed to setup video profiles" << std::endl;
+			LOGE("Failed to setup video profiles");
 			return;
 		}
 
@@ -3481,12 +3508,12 @@ public:
 		if (!rgbToNv12Converter.initialize(vulkanDevice, alignedWidth, alignedHeight, 
 				VK_FORMAT_B8G8R8A8_UNORM, offscreenImages, getShadersPath(),
 				&h264Encoder.getVideoProfileList())) {
-			std::cerr << "Failed to initialize RGB to NV12 converter" << std::endl;
+			LOGE("Failed to initialize RGB to NV12 converter");
 			return;
 		}
 
 		if (!h264Encoder.setupVideoSession()) {
-			std::cerr << "Failed to setup video encode session" << std::endl;
+			LOGE("Failed to setup video encode session");
 			return;
 		}
 
@@ -3502,9 +3529,9 @@ public:
 		graphicsQueueFamily = vulkanDevice->queueFamilyIndices.graphics;
 		videoQueueFamily = h264Encoder.getVideoQueueFamilyIndex();
 		
-		std::cout << "Headless video encoding pipeline initialized" << std::endl;
-		std::cout << "  Resolution: " << alignedWidth << "x" << alignedHeight << std::endl;
-		std::cout << "  Output: " << encoderConfig.outputPath << std::endl;
+		LOGI("Headless video encoding pipeline initialized");
+		LOGI("  Resolution: %ux%u", alignedWidth, alignedHeight);
+		LOGI("  Output: %s", encoderConfig.outputPath.c_str());
 	}
 
 	// Cleanup video encoding resources (called before reinitialization on resize)
@@ -3523,7 +3550,7 @@ public:
 		recordingEnabled = false;
 		encodedFrameCount = 0;
 		
-		std::cout << "Video encoding resources cleaned up" << std::endl;
+		LOGI("Video encoding resources cleaned up");
 	}
 	
 	// Initialize video encoding pipeline (RGB to NV12 converter + H264 encoder)
@@ -3532,7 +3559,7 @@ public:
 		// Check if video encoding is supported
 		if (!vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME) ||
 		    !vulkanDevice->extensionSupported(VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME)) {
-			std::cout << "H.264 video encoding or maintenance1 not supported, skipping encoder setup" << std::endl;
+			LOGW("H.264 video encoding or maintenance1 not supported, skipping encoder setup");
 			return;
 		}
 
@@ -3560,8 +3587,8 @@ public:
         uint32_t alignedHeight = (height % 2 == 0) ? height : height + 1;
 
         if (alignedWidth != width || alignedHeight != height) {
-            std::cout << "Note: Aligning video encoding resources from " << width << "x" << height 
-                      << " to " << alignedWidth << "x" << alignedHeight << " (required for 4:2:0 format)" << std::endl;
+            LOGI("Note: Aligning video encoding resources from %ux%u to %ux%u (required for 4:2:0 format)",
+                 width, height, alignedWidth, alignedHeight);
         }
 
 		// Initialize H264 encoder first (to get access to video profiles)
@@ -3579,13 +3606,13 @@ public:
 		encoderConfig.maxBitrate = 1000000;     // 1 Mbps
 
 		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
-			std::cerr << "Failed to initialize H264 encoder" << std::endl;
+			LOGE("Failed to initialize H264 encoder");
 			return;
 		}
 
 		// Setup video profiles before creating NV12 images that need the profile list
 		if (!h264Encoder.setupProfiles()) {
-			std::cerr << "Failed to setup video profiles" << std::endl;
+			LOGE("Failed to setup video profiles");
 			return;
 		}
 
@@ -3599,13 +3626,13 @@ public:
 		if (!rgbToNv12Converter.initialize(vulkanDevice, alignedWidth, alignedHeight, 
 				swapChain.colorFormat, swapchainImages, getShadersPath(),
 				&h264Encoder.getVideoProfileList())) {
-			std::cerr << "Failed to initialize RGB to NV12 converter" << std::endl;
+			LOGE("Failed to initialize RGB to NV12 converter");
 			return;
 		}
 
 		// Setup video encode session (query capabilities, create session, DPB, bitstream buffer, etc.)
 		if (!h264Encoder.setupVideoSession()) {
-			std::cerr << "Failed to setup video encode session" << std::endl;
+			LOGE("Failed to setup video encode session");
 			return;
 		}
 
@@ -3627,14 +3654,14 @@ public:
 		videoQueueFamily = h264Encoder.getVideoQueueFamilyIndex();
 		
 		bool sameQueueFamily = (graphicsQueueFamily == videoQueueFamily);
-		std::cout << "Video encoding pipeline initialized successfully" << std::endl;
-		std::cout << "  Resolution: " << alignedWidth << "x" << alignedHeight 
-		          << " (aligned from " << width << "x" << height << ")" << std::endl;
-		std::cout << "  Output: " << encoderConfig.outputPath << std::endl;
-		std::cout << "  Graphics queue family: " << graphicsQueueFamily << std::endl;
-		std::cout << "  Video queue family: " << videoQueueFamily << std::endl;
-		std::cout << "  Cross-queue transfer needed: " << (sameQueueFamily ? "No" : "Yes") << std::endl;
-		std::cout << "  Press 'R' to start/stop recording" << std::endl;
+		LOGI("Video encoding pipeline initialized successfully");
+		LOGI("  Resolution: %ux%u (aligned from %ux%u)",
+		     alignedWidth, alignedHeight, width, height);
+		LOGI("  Output: %s", encoderConfig.outputPath.c_str());
+		LOGI("  Graphics queue family: %u", graphicsQueueFamily);
+		LOGI("  Video queue family: %u", videoQueueFamily);
+		LOGI("  Cross-queue transfer needed: %s", sameQueueFamily ? "No" : "Yes");
+		LOGI("  Press 'R' to start/stop recording");
 	}
 	
 	// Handle window resize by reinitializing video encoder with new dimensions
@@ -3644,8 +3671,7 @@ public:
 		bool wasEncoderInitialized = h264Encoder.isReady();
 		
 		if (wasEncoderInitialized) {
-			std::cout << "Window resized to " << width << "x" << height 
-			          << ", reinitializing video encoder..." << std::endl;
+			LOGI("Window resized to %ux%u, reinitializing video encoder...", width, height);
 			
 			// Clean up existing encoder resources
 			cleanupVideoEncoding();
@@ -3673,10 +3699,9 @@ public:
             vulkanDevice->flushCommandBuffer(layoutCmd, queue);
 			
 			if (h264Encoder.isReady()) {
-				std::cout << "Video encoder reinitialized successfully at " 
-				          << width << "x" << height << std::endl;
+				LOGI("Video encoder reinitialized successfully at %ux%u", width, height);
 			} else {
-				std::cerr << "Failed to reinitialize video encoder after resize" << std::endl;
+				LOGE("Failed to reinitialize video encoder after resize");
 			}
 		}
 	}
@@ -3752,12 +3777,12 @@ public:
 			lastEncodeTime = now;
 		}
 		
-		std::cout << "[Frame] Starting encode of frame " << encodedFrameCount << std::endl;
+		LOGD("[Frame] Starting encode of frame %lu", (unsigned long)encodedFrameCount);
 		
 		// Wait for previous color conversion to complete
-		std::cout << "[Frame] Waiting for color convert fence..." << std::endl;
+		LOGD("[Frame] Waiting for color convert fence...");
 		vkWaitForFences(device, 1, &colorConvertFence, VK_TRUE, UINT64_MAX);
-		std::cout << "[Frame] Color convert fence signaled" << std::endl;
+		LOGD("[Frame] Color convert fence signaled");
 		vkResetFences(device, 1, &colorConvertFence);
 		
 		// Record color conversion commands
@@ -3768,13 +3793,13 @@ public:
 		
 		// Dispatch RGB to NV12 conversion
 		// Pass queue family info for ownership transfer if needed
-		std::cout << "[Frame] Recording color conversion commands..." << std::endl;
+		LOGD("[Frame] Recording color conversion commands...");
 		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, currentImageIndex, 
 		                                   swapChain.images[currentImageIndex],
 		                                   graphicsQueueFamily, videoQueueFamily);
 		
 		VK_CHECK_RESULT(vkEndCommandBuffer(colorConvertCmdBuffer));
-		std::cout << "[Frame] Color conversion command buffer recorded" << std::endl;
+		LOGD("[Frame] Color conversion command buffer recorded");
 		
 		// Submit color conversion to graphics queue
 		// Note: Since we wait on the fence before encoding, we don't need semaphore signaling
@@ -3785,29 +3810,29 @@ public:
 		submitInfo.signalSemaphoreCount = 0;
 		submitInfo.pSignalSemaphores = nullptr;
 		
-		std::cout << "[Frame] Submitting color conversion to graphics queue..." << std::endl;
+		LOGD("[Frame] Submitting color conversion to graphics queue...");
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, colorConvertFence));
-		std::cout << "[Frame] Color conversion submitted, semaphore will be signaled" << std::endl;
+		LOGD("[Frame] Color conversion submitted, semaphore will be signaled");
 		
 		// Wait for color conversion to actually complete before encoding
 		// This ensures the data is in the encode image before we try to encode
-		std::cout << "[Frame] Waiting for color conversion to complete on GPU..." << std::endl;
+		LOGD("[Frame] Waiting for color conversion to complete on GPU...");
 		vkWaitForFences(device, 1, &colorConvertFence, VK_TRUE, UINT64_MAX);
-		std::cout << "[Frame] Color conversion complete" << std::endl;
+		LOGD("[Frame] Color conversion complete");
 		
 		// Get NV12 images for encoding
 		const auto& nv12Image = rgbToNv12Converter.getNV12Image(currentImageIndex);
 		
 		// Encode the frame - don't pass semaphore since we waited for fence
 		// Pass graphicsQueueFamily for ownership acquire on video queue
-		std::cout << "[Frame] Calling encodeFrame..." << std::endl;
+		LOGD("[Frame] Calling encodeFrame...");
 		if (h264Encoder.encodeFrame(nv12Image.encodeImage, nv12Image.encodeView, queue,
 		                            VK_NULL_HANDLE,  // No semaphore, we waited on fence
 		                            graphicsQueueFamily)) {
 			encodedFrameCount++;
-			std::cout << "[Frame] Frame encoded successfully, total: " << encodedFrameCount << std::endl;
+			LOGD("[Frame] Frame encoded successfully, total: %lu", (unsigned long)encodedFrameCount);
 		} else {
-			std::cerr << "[Frame] Frame encoding failed!" << std::endl;
+			LOGE("[Frame] Frame encoding failed!");
 		}
 	}
 
@@ -3832,9 +3857,9 @@ public:
 				if (overlay->button(recordingEnabled ? "Stop Recording" : "Start Recording")) {
 					recordingEnabled = !recordingEnabled;
 					if (recordingEnabled) {
-						std::cout << "Recording started..." << std::endl;
+						LOGI("Recording started...");
 					} else {
-						std::cout << "Recording stopped. Encoded " << encodedFrameCount << " frames." << std::endl;
+						LOGI("Recording stopped. Encoded %lu frames.", encodedFrameCount);
 					}
 				}
                 // Force a one-off IDR on next frame
@@ -3856,9 +3881,9 @@ public:
 		if (key == 82 && h264Encoder.isReady()) {
 			recordingEnabled = !recordingEnabled;
 			if (recordingEnabled) {
-				std::cout << "Recording started..." << std::endl;
+				LOGI("Recording started...");
 			} else {
-				std::cout << "Recording stopped. Encoded " << encodedFrameCount << " frames." << std::endl;
+				LOGI("Recording stopped. Encoded %lu frames.", encodedFrameCount);
 			}
 		}
 	}
