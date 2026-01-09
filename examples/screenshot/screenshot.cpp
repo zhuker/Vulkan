@@ -1718,9 +1718,13 @@ public:
     // srcImage: NV12 multi-planar image (G8_B8R8_2PLANE_420_UNORM)
     // srcView: View of the NV12 image
     // srcQueueFamily: queue family index that released ownership (for cross-queue sync)
+    // timestampQueryPool: Optional query pool for latency measurement
+    // timestampQueryOffset: Offset into query pool for encode start/end timestamps
     bool encodeFrame(VkImage srcImage, VkImageView srcView,
                      VkQueue graphicsQueue, VkSemaphore waitSemaphore = VK_NULL_HANDLE,
-                     uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
+                     uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED,
+                     VkQueryPool timestampQueryPool = VK_NULL_HANDLE,
+                     uint32_t timestampQueryOffset = 0) {
         if (!isReady()) return false;
 
         LOGD("[Encode] Starting frame %lu/%lu", (unsigned long)decodingOrderFrameNum, (unsigned long)streamFrameNum);
@@ -1743,7 +1747,8 @@ public:
         
         // Record encode commands with queue family ownership transfer if needed
         LOGD("[Encode] Recording encode commands...");
-        recordEncodeCommands(encodeCommandBuffer, srcImage, srcView, srcQueueFamily);
+        recordEncodeCommands(encodeCommandBuffer, srcImage, srcView, srcQueueFamily,
+                            timestampQueryPool, timestampQueryOffset);
         
         VK_CHECK_RESULT(vkEndCommandBuffer(encodeCommandBuffer));
         LOGD("[Encode] Command buffer recorded");
@@ -2119,8 +2124,12 @@ private:
     // srcView: view of the NV12 image
     // srcQueueFamily: the queue family that released ownership (compute/graphics)
     // If srcQueueFamily differs from video queue family, we need to acquire ownership
+    // timestampQueryPool: Optional query pool for latency measurement
+    // timestampQueryOffset: Offset into query pool for encode start/end timestamps
     void recordEncodeCommands(VkCommandBuffer cmdBuffer, VkImage srcImage, VkImageView srcView,
-                              uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED) {
+                              uint32_t srcQueueFamily = VK_QUEUE_FAMILY_IGNORED,
+                              VkQueryPool timestampQueryPool = VK_NULL_HANDLE,
+                              uint32_t timestampQueryOffset = 0) {
         LOGD("\n========== ENCODE FRAME %lu/%lu ==========",
              (unsigned long)decodingOrderFrameNum, (unsigned long)streamFrameNum);
         LOGD("[GOP] Config: gopSize=%u, qp=%u", config.gopSize, config.qp);
@@ -2604,9 +2613,20 @@ private:
         }
 
         LOGD("[GOP] Begin coding with %u reference slot(s)", beginSlotCount);
-        
+
+        // Reset encode queries (4-5) before video coding scope
+        if (timestampQueryPool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(cmdBuffer, timestampQueryPool, timestampQueryOffset + 4, 2);
+        }
+
         fp_vkCmdBeginVideoCodingKHR(cmdBuffer, &beginInfo);
-        
+
+        // Write encode start timestamp (after BeginVideoCoding)
+        if (timestampQueryPool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                timestampQueryPool, timestampQueryOffset + 4);  // +4 for ENCODE_START
+        }
+
         // Reset session and configure rate control on first frame
         if (!sessionReset) {
             // Apply reset and rate control in one command
@@ -2663,7 +2683,13 @@ private:
              lastRefSlotIndex, lastRefFrameNum, lastRefPicOrderCnt, (int)lastRefPicType);
         LOGD("========== END ENCODE FRAME %lu/%lu ==========",
              (unsigned long)decodingOrderFrameNum, (unsigned long)streamFrameNum);
-        
+
+        // Write encode end timestamp (before EndVideoCoding)
+        if (timestampQueryPool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                timestampQueryPool, timestampQueryOffset + 5);  // +5 for ENCODE_END
+        }
+
         // End video coding
         VkVideoEndCodingInfoKHR endInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR,
@@ -2701,6 +2727,78 @@ public:
 	bool recordingEnabled{ false };
 	uint64_t encodedFrameCount{ 0 };
 	std::chrono::steady_clock::time_point lastEncodeTime{};
+
+	// GPU timestamp latency measurement
+	VkQueryPool timestampQueryPool{ VK_NULL_HANDLE };
+	float timestampPeriod{ 1.0f };  // Nanoseconds per timestamp tick
+	static constexpr uint32_t QUERIES_PER_FRAME = 6;
+	static constexpr uint32_t TIMESTAMP_RENDER_START = 0;
+	static constexpr uint32_t TIMESTAMP_RENDER_END = 1;
+	static constexpr uint32_t TIMESTAMP_CONVERT_START = 2;
+	static constexpr uint32_t TIMESTAMP_CONVERT_END = 3;
+	static constexpr uint32_t TIMESTAMP_ENCODE_START = 4;
+	static constexpr uint32_t TIMESTAMP_ENCODE_END = 5;
+
+	struct LatencyStatistics {
+		std::vector<double> renderLatencies;
+		std::vector<double> convertLatencies;
+		std::vector<double> encodeLatencies;
+		std::vector<double> renderToEncodeLatencies;  // Key metric
+		std::vector<double> totalLatencies;
+		uint32_t frameCount = 0;
+
+		void addFrame(double render, double convert, double encode, double renderToEncode, double total) {
+			renderLatencies.push_back(render);
+			convertLatencies.push_back(convert);
+			encodeLatencies.push_back(encode);
+			renderToEncodeLatencies.push_back(renderToEncode);
+			totalLatencies.push_back(total);
+			frameCount++;
+
+			if (frameCount >= 100) {
+				reportStatistics();
+				reset();
+			}
+		}
+
+		void reportStatistics() const {
+			if (frameCount == 0) return;
+
+			auto calcStats = [](const std::vector<double>& data) {
+				double sum = 0.0, min = data[0], max = data[0];
+				for (double val : data) {
+					sum += val;
+					if (val < min) min = val;
+					if (val > max) max = val;
+				}
+				return std::make_tuple(sum / data.size(), min, max);
+			};
+
+			auto [renderAvg, renderMin, renderMax] = calcStats(renderLatencies);
+			auto [convertAvg, convertMin, convertMax] = calcStats(convertLatencies);
+			auto [encodeAvg, encodeMin, encodeMax] = calcStats(encodeLatencies);
+			auto [r2eAvg, r2eMin, r2eMax] = calcStats(renderToEncodeLatencies);
+			auto [totalAvg, totalMin, totalMax] = calcStats(totalLatencies);
+
+			LOGI("========== Latency Statistics (100 frames) ==========");
+			LOGI("Render Time:        avg=%.2fms, min=%.2fms, max=%.2fms", renderAvg, renderMin, renderMax);
+			LOGI("Color Conversion:   avg=%.2fms, min=%.2fms, max=%.2fms", convertAvg, convertMin, convertMax);
+			LOGI("Encode Time:        avg=%.2fms, min=%.2fms, max=%.2fms", encodeAvg, encodeMin, encodeMax);
+			LOGI("Render-to-Encode:   avg=%.2fms, min=%.2fms, max=%.2fms  <-- KEY", r2eAvg, r2eMin, r2eMax);
+			LOGI("Total Pipeline:     avg=%.2fms, min=%.2fms, max=%.2fms", totalAvg, totalMin, totalMax);
+			LOGI("====================================================");
+		}
+
+		void reset() {
+			renderLatencies.clear();
+			convertLatencies.clear();
+			encodeLatencies.clear();
+			renderToEncodeLatencies.clear();
+			totalLatencies.clear();
+			frameCount = 0;
+		}
+	};
+	LatencyStatistics latencyStats;
 
 	// Video encoding resources
 	RGBtoNV12Converter rgbToNv12Converter;
@@ -2750,7 +2848,12 @@ public:
 		if (device) {
 			// Wait for any pending encode operations
 			vkDeviceWaitIdle(device);
-			
+
+			// Cleanup timestamp query pool
+			if (timestampQueryPool != VK_NULL_HANDLE) {
+				vkDestroyQueryPool(device, timestampQueryPool, nullptr);
+			}
+
 			// Cleanup offscreen resources (headless mode)
 			if (offscreen.framebuffer != VK_NULL_HANDLE) {
 				vkDestroyFramebuffer(device, offscreen.framebuffer, nullptr);
@@ -3043,6 +3146,15 @@ public:
 		renderPassBeginInfo.framebuffer = offscreen.framebuffer;
 
 		VK_CHECK_RESULT(vkBeginCommandBuffer(cmdBuffer, &cmdBufInfo));
+
+		// Reset and write render start timestamp (headless always uses index 0)
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			// Only reset render queries (0-1) in this command buffer
+			vkCmdResetQueryPool(cmdBuffer, timestampQueryPool, TIMESTAMP_RENDER_START, 2);
+			vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			                    timestampQueryPool, TIMESTAMP_RENDER_START);
+		}
+
 		vkCmdBeginRenderPass(cmdBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 		VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
 		vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
@@ -3053,6 +3165,13 @@ public:
 		model.draw(cmdBuffer);
 		// Note: No UI in headless mode
 		vkCmdEndRenderPass(cmdBuffer);
+
+		// Write render end timestamp
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			                    timestampQueryPool, TIMESTAMP_RENDER_END);
+		}
+
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
@@ -3065,16 +3184,30 @@ public:
 		
 		// Record color conversion commands
 		vkResetCommandBuffer(colorConvertCmdBuffer, 0);
-		
+
 		VkCommandBufferBeginInfo beginInfo = vks::initializers::commandBufferBeginInfo();
 		VK_CHECK_RESULT(vkBeginCommandBuffer(colorConvertCmdBuffer, &beginInfo));
-		
+
+		// Reset and write color conversion start timestamp (headless always uses index 0)
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			// Reset color conversion queries (2-3) in this command buffer
+			vkCmdResetQueryPool(colorConvertCmdBuffer, timestampQueryPool, TIMESTAMP_CONVERT_START, 2);
+			vkCmdWriteTimestamp(colorConvertCmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			                    timestampQueryPool, TIMESTAMP_CONVERT_START);
+		}
+
 		// Use TRANSFER_SRC_OPTIMAL for headless mode (set by render pass final layout)
-		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, 0, 
+		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, 0,
 		                                   offscreen.colorImage,
 		                                   graphicsQueueFamily, videoQueueFamily,
 		                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-		
+
+		// Write color conversion end timestamp
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			vkCmdWriteTimestamp(colorConvertCmdBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			                    timestampQueryPool, TIMESTAMP_CONVERT_END);
+		}
+
 		VK_CHECK_RESULT(vkEndCommandBuffer(colorConvertCmdBuffer));
 		
 		// Submit color conversion
@@ -3088,10 +3221,14 @@ public:
 		// Get NV12 image for encoding (always index 0 in headless mode)
 		const auto& nv12Image = rgbToNv12Converter.getNV12Image(0);
 		
-		// Encode the frame
+		// Encode the frame (headless always uses query offset 0)
 		if (h264Encoder.encodeFrame(nv12Image.encodeImage, nv12Image.encodeView, queue,
-		                            VK_NULL_HANDLE, graphicsQueueFamily)) {
+		                            VK_NULL_HANDLE, graphicsQueueFamily,
+		                            timestampQueryPool, 0)) {
 			encodedFrameCount++;
+
+			// Retrieve and process timestamps
+			retrieveTimestamps(0);
 		}
 	}
 
@@ -3532,24 +3669,104 @@ public:
 		LOGI("Headless video encoding pipeline initialized");
 		LOGI("  Resolution: %ux%u", alignedWidth, alignedHeight);
 		LOGI("  Output: %s", encoderConfig.outputPath.c_str());
+
+		// Create timestamp query pool for latency measurement
+		createTimestampQueryPool();
+	}
+
+	// Create timestamp query pool for latency measurement
+	void createTimestampQueryPool()
+	{
+		// Get timestamp properties
+		VkPhysicalDeviceProperties properties;
+		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+		timestampPeriod = properties.limits.timestampPeriod;
+
+		// Check timestamp support
+		if (!properties.limits.timestampComputeAndGraphics) {
+			LOGW("Timestamps not supported on compute and graphics queues");
+			return;
+		}
+
+		// Create query pool for timestamps (currently single frame, future-proof for maxConcurrentFrames)
+		uint32_t totalQueries = maxConcurrentFrames * QUERIES_PER_FRAME;
+		VkQueryPoolCreateInfo queryPoolInfo = {
+			.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+			.queryType = VK_QUERY_TYPE_TIMESTAMP,
+			.queryCount = totalQueries,
+		};
+
+		VK_CHECK_RESULT(vkCreateQueryPool(device, &queryPoolInfo, nullptr, &timestampQueryPool));
+
+		// Reset all queries to initialize them
+		// This is required because queries start in an uninitialized state after pool creation
+		VkCommandBuffer cmdBuffer = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		vkCmdResetQueryPool(cmdBuffer, timestampQueryPool, 0, totalQueries);
+		vulkanDevice->flushCommandBuffer(cmdBuffer, queue, true);
+
+		LOGI("Timestamp query pool created (period=%.2fns, queries=%u)", timestampPeriod, totalQueries);
+	}
+
+	// Retrieve timestamps and calculate latency statistics
+	void retrieveTimestamps(uint32_t frameIndex)
+	{
+		if (timestampQueryPool == VK_NULL_HANDLE) return;
+
+		// Get query results for this frame
+		uint32_t queryOffset = frameIndex * QUERIES_PER_FRAME;
+		uint64_t timestamps[QUERIES_PER_FRAME];
+
+		VkResult result = vkGetQueryPoolResults(
+			device, timestampQueryPool,
+			queryOffset, QUERIES_PER_FRAME,
+			sizeof(timestamps), timestamps,
+			sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
+		);
+
+		if (result != VK_SUCCESS) {
+			LOGW("Failed to retrieve timestamp query results: %d", result);
+			return;
+		}
+
+		// Convert to milliseconds
+		double renderTime = (timestamps[TIMESTAMP_RENDER_END] - timestamps[TIMESTAMP_RENDER_START])
+		                  * timestampPeriod / 1000000.0;
+		double convertTime = (timestamps[TIMESTAMP_CONVERT_END] - timestamps[TIMESTAMP_CONVERT_START])
+		                   * timestampPeriod / 1000000.0;
+		double encodeTime = (timestamps[TIMESTAMP_ENCODE_END] - timestamps[TIMESTAMP_ENCODE_START])
+		                  * timestampPeriod / 1000000.0;
+		double renderToEncode = (timestamps[TIMESTAMP_ENCODE_END] - timestamps[TIMESTAMP_RENDER_END])
+		                      * timestampPeriod / 1000000.0;
+		double totalTime = (timestamps[TIMESTAMP_ENCODE_END] - timestamps[TIMESTAMP_RENDER_START])
+		                 * timestampPeriod / 1000000.0;
+
+		// Add to statistics
+		latencyStats.addFrame(renderTime, convertTime, encodeTime, renderToEncode, totalTime);
 	}
 
 	// Cleanup video encoding resources (called before reinitialization on resize)
 	void cleanupVideoEncoding()
 	{
 		if (device == VK_NULL_HANDLE) return;
-		
+
 		// Wait for any pending encoding operations to complete
 		vkDeviceWaitIdle(device);
-		
+
 		// Cleanup converter and encoder resources
 		rgbToNv12Converter.cleanup();
 		h264Encoder.cleanup();
-		
+
+		// Cleanup timestamp query pool
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			vkDestroyQueryPool(device, timestampQueryPool, nullptr);
+			timestampQueryPool = VK_NULL_HANDLE;
+		}
+
 		// Reset recording state
 		recordingEnabled = false;
 		encodedFrameCount = 0;
-		
+		latencyStats.reset();
+
 		LOGI("Video encoding resources cleaned up");
 	}
 	
@@ -3662,6 +3879,9 @@ public:
 		LOGI("  Video queue family: %u", videoQueueFamily);
 		LOGI("  Cross-queue transfer needed: %s", sameQueueFamily ? "No" : "Yes");
 		LOGI("  Press 'R' to start/stop recording");
+
+		// Create timestamp query pool for latency measurement
+		createTimestampQueryPool();
 	}
 	
 	// Handle window resize by reinitializing video encoder with new dimensions
@@ -3727,6 +3947,18 @@ public:
 		renderPassBeginInfo.framebuffer = frameBuffers[currentImageIndex];
 
 		VK_CHECK_RESULT(vkBeginCommandBuffer(cmdBuffer, &cmdBufInfo));
+
+		// Reset and write render start timestamp
+		// Note: Always write timestamps if pool exists, not just when recording
+		// Use currentBuffer (frame-in-flight index) for query offset since command buffers are pre-built
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			uint32_t queryOffset = currentBuffer * QUERIES_PER_FRAME;
+			// Only reset render queries (0-1) in this command buffer
+			vkCmdResetQueryPool(cmdBuffer, timestampQueryPool, queryOffset + TIMESTAMP_RENDER_START, 2);
+			vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			                    timestampQueryPool, queryOffset + TIMESTAMP_RENDER_START);
+		}
+
 		vkCmdBeginRenderPass(cmdBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 		VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
 		vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
@@ -3737,6 +3969,14 @@ public:
 		model.draw(cmdBuffer);
 		drawUI(cmdBuffer);
 		vkCmdEndRenderPass(cmdBuffer);
+
+		// Write render end timestamp
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			uint32_t queryOffset = currentBuffer * QUERIES_PER_FRAME;
+			vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			                    timestampQueryPool, queryOffset + TIMESTAMP_RENDER_END);
+		}
+
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
@@ -3747,18 +3987,22 @@ public:
 		VulkanExampleBase::prepareFrame();
 		updateUniformBuffers();
 		buildCommandBuffer();
+		// Capture currentBuffer before submitFrame() as prepareFrame() may update it for the next frame
+		uint32_t frameBufferIndex = currentBuffer;
 		VulkanExampleBase::submitFrame();
-		
+
 	    if (!recordingEnabled)
 	        recordingEnabled = true;  // Auto-start recording for demonstration purposes
 		// Encode frame if recording is enabled
+		// Pass the captured frame buffer index to ensure we retrieve timestamps from the correct query set
 		if (recordingEnabled && h264Encoder.isReady() && rgbToNv12Converter.isReady()) {
-			encodeCurrentFrame();
+			encodeCurrentFrame(frameBufferIndex);
 		}
 	}
 	
 	// Encode the current frame to H.264
-	void encodeCurrentFrame()
+	// frameBufferIndex: The frame-in-flight index (currentBuffer) captured at the time of command buffer submission
+	void encodeCurrentFrame(uint32_t frameBufferIndex)
 	{
 		// Check frame rate limiter
 		const auto& config = h264Encoder.getConfig();
@@ -3790,14 +4034,32 @@ public:
 		
 		VkCommandBufferBeginInfo beginInfo = vks::initializers::commandBufferBeginInfo();
 		VK_CHECK_RESULT(vkBeginCommandBuffer(colorConvertCmdBuffer, &beginInfo));
-		
+
+		// Reset and write color conversion start timestamp
+		// Use frameBufferIndex (captured at submission) to match render command buffer
+		// frameBufferIndex is guaranteed to be < maxConcurrentFrames
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			uint32_t queryOffset = frameBufferIndex * QUERIES_PER_FRAME;
+			// Reset color conversion queries (2-3) in this command buffer
+			vkCmdResetQueryPool(colorConvertCmdBuffer, timestampQueryPool, queryOffset + TIMESTAMP_CONVERT_START, 2);
+			vkCmdWriteTimestamp(colorConvertCmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			                    timestampQueryPool, queryOffset + TIMESTAMP_CONVERT_START);
+		}
+
 		// Dispatch RGB to NV12 conversion
 		// Pass queue family info for ownership transfer if needed
 		LOGD("[Frame] Recording color conversion commands...");
-		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, currentImageIndex, 
+		rgbToNv12Converter.recordCommands(colorConvertCmdBuffer, currentImageIndex,
 		                                   swapChain.images[currentImageIndex],
 		                                   graphicsQueueFamily, videoQueueFamily);
-		
+
+		// Write color conversion end timestamp
+		if (timestampQueryPool != VK_NULL_HANDLE) {
+			uint32_t queryOffset = frameBufferIndex * QUERIES_PER_FRAME;
+			vkCmdWriteTimestamp(colorConvertCmdBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			                    timestampQueryPool, queryOffset + TIMESTAMP_CONVERT_END);
+		}
+
 		VK_CHECK_RESULT(vkEndCommandBuffer(colorConvertCmdBuffer));
 		LOGD("[Frame] Color conversion command buffer recorded");
 		
@@ -3825,12 +4087,19 @@ public:
 		
 		// Encode the frame - don't pass semaphore since we waited for fence
 		// Pass graphicsQueueFamily for ownership acquire on video queue
+		// Pass timestamp query pool for latency measurement
 		LOGD("[Frame] Calling encodeFrame...");
+		// Use frameBufferIndex (captured at submission) for query offset
+		uint32_t queryOffset = frameBufferIndex * QUERIES_PER_FRAME;
 		if (h264Encoder.encodeFrame(nv12Image.encodeImage, nv12Image.encodeView, queue,
 		                            VK_NULL_HANDLE,  // No semaphore, we waited on fence
-		                            graphicsQueueFamily)) {
+		                            graphicsQueueFamily,
+		                            timestampQueryPool, queryOffset)) {
 			encodedFrameCount++;
 			LOGD("[Frame] Frame encoded successfully, total: %lu", (unsigned long)encodedFrameCount);
+
+			// Retrieve and process timestamps using the captured frame buffer index
+			retrieveTimestamps(frameBufferIndex);
 		} else {
 			LOGE("[Frame] Frame encoding failed!");
 		}
