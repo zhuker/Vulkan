@@ -3090,10 +3090,10 @@ public:
 			uniformData.view = camera.matrices.view;
 			uniformData.model = glm::mat4(1.0f);
 			uniformBuffers[0].copyTo(&uniformData, sizeof(UniformData));
-			
-			// Build and record command buffer
-			buildHeadlessCommandBuffer();
-			
+
+			// Note: Command buffer is pre-recorded once in prepareHeadless()
+			// No need to rebuild every frame - uniforms are updated via buffer
+
 			// Submit rendering
 			VkSubmitInfo submitInfo = vks::initializers::submitInfo();
 			submitInfo.commandBufferCount = 1;
@@ -3102,12 +3102,18 @@ public:
 			// Reset fence before submitting (fence is created signaled by base class)
 			VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[0]));
 			VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[0]));
-			VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFences[0], VK_TRUE, UINT64_MAX));
-			
-			// Encode frame
+
+			// Don't wait here - let GPU run in parallel with CPU encoding prep
+			// This allows better CPU/GPU overlap while maintaining low latency
+
+			// Encode frame (which has its own waits for synchronization)
 			if (h264Encoder.isReady() && rgbToNv12Converter.isReady()) {
 				encodeHeadlessFrame();
 			}
+
+			// Wait at end of frame to ensure completion before next iteration
+			// This preserves single-frame latency while allowing CPU/GPU parallelism
+			VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFences[0], VK_TRUE, UINT64_MAX));
 		}
 		
 		auto endTime = std::chrono::high_resolution_clock::now();
@@ -3126,9 +3132,10 @@ public:
 	void buildHeadlessCommandBuffer()
 	{
 		VkCommandBuffer cmdBuffer = drawCmdBuffers[0];
-		
-		VK_CHECK_RESULT(vkResetCommandBuffer(cmdBuffer, 0));
-		
+
+		// Note: No vkResetCommandBuffer here - this function is called once during init
+		// The command buffer is recorded once and reused for all frames
+
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
 		VkClearValue clearValues[2]{};
@@ -3590,12 +3597,18 @@ public:
 		
 		// Prepare video encoding for headless mode
 		prepareVideoEncodingHeadless();
-		
+
+		// Pre-record command buffer once (Performance Optimization 0B)
+		// This avoids resetting and re-recording the command buffer every frame
+		// Uniforms are updated via buffer writes, so the command buffer can be static
+		buildHeadlessCommandBuffer();
+		LOGI("Pre-recorded command buffer for headless rendering (will be reused for all frames)");
+
 		prepared = true;
-		
+
 		// Auto-start recording in headless mode
 		recordingEnabled = true;
-		
+
 		// Run the headless render loop
 		renderLoopHeadless();
 	}
