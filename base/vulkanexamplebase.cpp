@@ -783,6 +783,7 @@ VulkanExampleBase::VulkanExampleBase()
 	commandLineParser.add("benchmarkframes", { "-bfs", "--benchmarkframes" }, 1, "Only render the given number of frames");
 	commandLineParser.add("headless", { "-hl", "--headless" }, 0, "Dont render ui");
 	commandLineParser.add("gir", { "--gir" }, 0, "Enable Gradual Intra Refresh for video encoding");
+	commandLineParser.add("vbr", { "--vbr" }, 1, "Enable VBR rate control with bitrate in kbps (e.g. --vbr 5000)");
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	commandLineParser.add("resourcepath", { "-rp", "--resourcepath" }, 1, "Set path for dir where assets and shaders folder is present");
 #endif

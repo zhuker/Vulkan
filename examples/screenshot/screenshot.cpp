@@ -3938,12 +3938,12 @@ public:
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
 	    encoderConfig.useVBR = false;  // CQP for headless
-	    if (enableGIR) {
-	        // only to show gir refresh cycle we set bitrate to be super low for the resolution 
-	        // in headless mode frames are rendered as fast as possible so vbr makes little sense 
-	        encoderConfig.useVBR = true;  
-	        encoderConfig.averageBitrate = 500*1000;  
-	        encoderConfig.maxBitrate = 500*1000;
+	    if (commandLineParser.isSet("vbr")) {
+	        encoderConfig.useVBR = true;
+	        uint32_t bitrateKbps = commandLineParser.getValueAsInt("vbr", 4200);
+	        encoderConfig.averageBitrate = bitrateKbps * 1000;
+	        encoderConfig.maxBitrate = bitrateKbps * 1000;
+	        LOGI("VBR enabled via command line, bitrate: %u kbps", bitrateKbps);
 	    }
 
 		encoderConfig.enableGIR = enableGIR;
@@ -4137,10 +4137,13 @@ public:
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
 		
-		// VBR Configuration
-		encoderConfig.useVBR = true;
-		encoderConfig.averageBitrate = 1000000; // 1 Mbps
-		encoderConfig.maxBitrate = 1000000;     // 1 Mbps
+	    if (commandLineParser.isSet("vbr")) {
+	        encoderConfig.useVBR = true;
+	        uint32_t bitrateKbps = commandLineParser.getValueAsInt("vbr", 4200);
+	        encoderConfig.averageBitrate = bitrateKbps * 1000;
+	        encoderConfig.maxBitrate = bitrateKbps * 1000;
+	        LOGI("VBR enabled via command line, bitrate: %u kbps", bitrateKbps);
+	    }
 
 		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
 			LOGE("Failed to initialize H264 encoder");
