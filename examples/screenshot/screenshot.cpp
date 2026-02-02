@@ -17,6 +17,12 @@
 #include <bitset>
 #include <cstdio>
 
+// VK_KHR_video_encode_intra_refresh extension definitions
+// These are provided for compatibility - values match SDK 1.4.335.0
+#ifndef VK_KHR_video_encode_intra_refresh
+#error "You are using wrong vulkan sdk headers"
+#endif // VK_KHR_video_encode_intra_refresh
+
 // Logging macros - can be disabled individually or all at once
 // Define DISABLE_LOGGING to disable all logging
 // Or define individual levels: DISABLE_LOGD, DISABLE_LOGI, DISABLE_LOGW, DISABLE_LOGE
@@ -932,6 +938,9 @@ public:
         bool useVBR = false;         // Enable VBR rate control
         uint32_t averageBitrate = 0; // Average bitrate (bits/s)
         uint32_t maxBitrate = 0;     // Max bitrate (bits/s)
+        // GIR (Gradual Intra Refresh) configuration
+        bool enableGIR = false;              // Enable hardware Gradual Intra Refresh
+        uint32_t girCycleDuration = 30;      // Frames to complete full refresh (1-maxIntraRefreshCycleDuration)
     };
 
     // Per-frame encoding state
@@ -1000,6 +1009,7 @@ private:
     std::array<DPBSlot, MAX_DPB_SLOTS> dpbSlots{};
     uint32_t activeDPBSlots = 0;
     std::bitset<MAX_DPB_SLOTS> activeSlotsInSession;
+    std::array<uint32_t, MAX_DPB_SLOTS> dpbDirtyRegions{};  // GIR: dirty region count per DPB slot
     
     // Bitstream output buffer
     VkBuffer bitstreamBuffer = VK_NULL_HANDLE;
@@ -1034,7 +1044,22 @@ private:
     // User-triggered keyframe (IDR) request flag and current frame type tracking
     std::atomic<bool> forceIDRRequested{false};
     bool currentFrameIsIDR{false};
-    
+
+    // GIR (Gradual Intra Refresh) capability tracking
+    bool girIntraRefreshExtensionSupported = false;   // VK_KHR_video_encode_intra_refresh
+    bool girDifferentSliceTypeSupported = false;      // VK_VIDEO_ENCODE_H264_CAPABILITY_DIFFERENT_SLICE_TYPE_BIT_KHR
+    bool girConstrainedIntraPredSupported = false;    // VK_VIDEO_ENCODE_H264_STD_CONSTRAINED_INTRA_PRED_FLAG_SET_BIT_KHR
+
+    // GIR capabilities (when extension is supported)
+    VkFlags girSupportedModes = 0;            // VkVideoEncodeIntraRefreshModeFlagsKHR
+    uint32_t girMaxCycleDuration = 0;
+    uint32_t girMaxActiveReferencePictures = 0;
+
+    // GIR runtime state
+    bool girEnabled = false;                  // GIR actually enabled for this session
+    uint32_t girCurrentIndex = 0;             // Current position in refresh cycle
+    VkVideoEncodeIntraRefreshModeFlagBitsKHR girActiveMode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_NONE_KHR;  // Selected GIR mode
+
     // Configuration
     EncoderConfig config{};
     
@@ -1112,7 +1137,19 @@ public:
     bool isH264Supported() const {
         return vulkanDevice && vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
     }
-    
+
+    // GIR capability getters (call after queryCapabilities())
+    bool hasIntraRefreshExtension() const { return girIntraRefreshExtensionSupported; }
+    bool hasDifferentSliceTypeSupport() const { return girDifferentSliceTypeSupported; }
+    bool hasConstrainedIntraPredSupport() const { return girConstrainedIntraPredSupported; }
+    bool canDoManualGIR() const { return girDifferentSliceTypeSupported; }
+    bool canDoFullManualGIR() const { return girDifferentSliceTypeSupported && girConstrainedIntraPredSupported; }
+
+    // GIR runtime state getters (call after createVideoSession())
+    bool isGIREnabled() const { return girEnabled; }
+    uint32_t getGIRCurrentIndex() const { return girCurrentIndex; }
+    uint32_t getGIRMaxCycleDuration() const { return girMaxCycleDuration; }
+
     // Setup video profiles (call before creating resources that need video profile)
     // This sets up the profile structures without creating the video session
     bool setupProfiles() {
@@ -1196,7 +1233,73 @@ public:
         LOGI("    Max temporal layer count: %u", h264Capabilities.maxTemporalLayerCount);
         LOGI("    Preferred max L0 ref count: %u", h264Capabilities.maxQp);
         LOGI("    Flags: 0x%x", h264Capabilities.flags);
-        
+        LOGI("    Std syntax flags: 0x%x", h264Capabilities.stdSyntaxFlags);
+
+        // Check GIR-related capabilities
+        girIntraRefreshExtensionSupported = vulkanDevice->extensionSupported("VK_KHR_video_encode_intra_refresh");
+        girDifferentSliceTypeSupported = (h264Capabilities.flags & VK_VIDEO_ENCODE_H264_CAPABILITY_DIFFERENT_SLICE_TYPE_BIT_KHR) != 0;
+        girConstrainedIntraPredSupported = (h264Capabilities.stdSyntaxFlags & VK_VIDEO_ENCODE_H264_STD_CONSTRAINED_INTRA_PRED_FLAG_SET_BIT_KHR) != 0;
+
+        LOGI("  GIR (Gradual Intra Refresh) Capability Check:");
+        LOGI("    VK_KHR_video_encode_intra_refresh extension: %s", girIntraRefreshExtensionSupported ? "SUPPORTED" : "NOT SUPPORTED");
+        LOGI("    DIFFERENT_SLICE_TYPE capability: %s", girDifferentSliceTypeSupported ? "SUPPORTED" : "NOT SUPPORTED");
+        LOGI("    CONSTRAINED_INTRA_PRED std syntax: %s", girConstrainedIntraPredSupported ? "SUPPORTED" : "NOT SUPPORTED");
+
+        if (!girIntraRefreshExtensionSupported) {
+            if (girDifferentSliceTypeSupported && girConstrainedIntraPredSupported) {
+                LOGI("    -> Manual GIR possible (multi-slice with constrained intra pred)");
+            } else if (girDifferentSliceTypeSupported) {
+                LOGI("    -> Partial GIR possible (multi-slice, but no constrained intra pred - errors may propagate)");
+            } else {
+                LOGI("    -> GIR NOT possible (different slice types not supported)");
+            }
+        } else {
+            LOGI("    -> Hardware GIR supported via extension");
+
+            // Query detailed intra refresh capabilities
+            // Zero-initialize all structs to avoid garbage in pNext chains
+            VkVideoEncodeIntraRefreshCapabilitiesKHR intraRefreshCaps = {};
+            intraRefreshCaps.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INTRA_REFRESH_CAPABILITIES_KHR;
+            intraRefreshCaps.pNext = nullptr;
+
+            // Re-query capabilities with intra refresh caps in chain
+            VkVideoEncodeH264CapabilitiesKHR h264CapsGIR = {};
+            h264CapsGIR.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_CAPABILITIES_KHR;
+            h264CapsGIR.pNext = &intraRefreshCaps;
+
+            VkVideoEncodeCapabilitiesKHR encodeCapsGIR = {};
+            encodeCapsGIR.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR;
+            encodeCapsGIR.pNext = &h264CapsGIR;
+
+            VkVideoCapabilitiesKHR videoCapsGIR = {};
+            videoCapsGIR.sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR;
+            videoCapsGIR.pNext = &encodeCapsGIR;
+
+            VkResult girResult = fp_vkGetPhysicalDeviceVideoCapabilitiesKHR(
+                physicalDevice, &videoProfile, &videoCapsGIR);
+
+            if (girResult == VK_SUCCESS) {
+                girSupportedModes = intraRefreshCaps.intraRefreshModes;
+                girMaxCycleDuration = intraRefreshCaps.maxIntraRefreshCycleDuration;
+                girMaxActiveReferencePictures = intraRefreshCaps.maxIntraRefreshActiveReferencePictures;
+
+                LOGI("    Intra Refresh Capabilities:");
+                LOGI("      Supported modes: 0x%x", girSupportedModes);
+                if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_ROW_BASED_BIT_KHR)
+                    LOGI("        - Block row-based");
+                if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_COLUMN_BASED_BIT_KHR)
+                    LOGI("        - Block column-based");
+                if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_BASED_BIT_KHR)
+                    LOGI("        - Block-based");
+                if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_PER_PICTURE_PARTITION_BIT_KHR)
+                    LOGI("        - Per-picture partition");
+                LOGI("      Max cycle duration: %u frames", girMaxCycleDuration);
+                LOGI("      Max active reference pictures: %u", girMaxActiveReferencePictures);
+            } else {
+                LOGW("    Failed to query intra refresh capabilities: %d", girResult);
+            }
+        }
+
         return true;
     }
     
@@ -1224,11 +1327,73 @@ public:
         }
         
         LOGI("Got video encode queue: %p", (void*)videoQueue);
-        
+
+        // Check if GIR should be enabled
+        girEnabled = false;
+        VkVideoEncodeSessionIntraRefreshCreateInfoKHR girSessionInfo = {};
+
+        if (config.enableGIR) {
+            if (!girIntraRefreshExtensionSupported) {
+                LOGW("GIR requested but VK_KHR_video_encode_intra_refresh not supported - disabling GIR");
+            } else if (girSupportedModes == 0) {
+                LOGW("GIR requested but no intra refresh modes supported - disabling GIR");
+            } else {
+                // Select the best available mode (prefer row-based for horizontal refresh)
+                // Note: Per-picture partition requires multi-slice encoding (sliceCount == cycleDuration)
+                girActiveMode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_NONE_KHR;
+                if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_ROW_BASED_BIT_KHR) {
+                    girActiveMode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_ROW_BASED_BIT_KHR;
+                    LOGI("GIR: Using block row-based mode");
+                } else if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_BASED_BIT_KHR) {
+                    girActiveMode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_BASED_BIT_KHR;
+                    LOGI("GIR: Using block-based mode");
+                } else if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_COLUMN_BASED_BIT_KHR) {
+                    girActiveMode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_COLUMN_BASED_BIT_KHR;
+                    LOGI("GIR: Using block column-based mode");
+                } else if (girSupportedModes & VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_PER_PICTURE_PARTITION_BIT_KHR) {
+                    girActiveMode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_PER_PICTURE_PARTITION_BIT_KHR;
+                    LOGI("GIR: Using per-picture partition mode");
+                }
+
+                if (girActiveMode != VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_NONE_KHR) {
+                    // Validate and clamp cycle duration
+                    uint32_t cycleDuration = config.girCycleDuration;
+                    if (girMaxCycleDuration > 0 && cycleDuration > girMaxCycleDuration) {
+                        LOGW("GIR cycle duration %u exceeds max %u, clamping", cycleDuration, girMaxCycleDuration);
+                        cycleDuration = girMaxCycleDuration;
+                    }
+
+                    // Per-picture partition mode requires naluSliceEntryCount == cycleDuration
+                    if (girActiveMode == VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_PER_PICTURE_PARTITION_BIT_KHR) {
+                        if (h264Capabilities.maxSliceCount < cycleDuration) {
+                            LOGW("GIR per-picture partition requires %u slices but maxSliceCount is %u",
+                                 cycleDuration, h264Capabilities.maxSliceCount);
+                            LOGW("Disabling GIR - hardware does not support enough slices");
+                            girActiveMode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_NONE_KHR;
+                        } else {
+                            LOGI("GIR: Multi-slice mode enabled (%u slices per picture)", cycleDuration);
+                        }
+                    }
+                }
+
+                if (girActiveMode != VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_NONE_KHR) {
+                    girSessionInfo = {
+                        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_INTRA_REFRESH_CREATE_INFO_KHR,
+                        .pNext = nullptr,
+                        .intraRefreshMode = girActiveMode,
+                    };
+
+                    girEnabled = true;
+                    girCurrentIndex = 0;
+                    LOGI("GIR enabled with cycle duration: %u frames", config.girCycleDuration);
+                }
+            }
+        }
+
         // Create video session
         VkVideoSessionCreateInfoKHR sessionCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
-            .pNext = nullptr,
+            .pNext = girEnabled ? &girSessionInfo : nullptr,
             .queueFamilyIndex = videoQueueFamilyIndex,
             .flags = 0,
             .pVideoProfile = &videoProfile,
@@ -1239,7 +1404,7 @@ public:
             .maxActiveReferencePictures = videoCapabilities.maxActiveReferencePictures,
             .pStdHeaderVersion = &videoCapabilities.stdHeaderVersion,
         };
-        
+
         VkResult result = fp_vkCreateVideoSessionKHR(device, &sessionCreateInfo, nullptr, &videoSession);
         if (result != VK_SUCCESS) {
             LOGE("Failed to create video session: %d", result);
@@ -1251,10 +1416,13 @@ public:
             return false;
         }
         
-        LOGI("Video session created successfully");
+        LOGI("Video session created successfully%s", girEnabled ? " (GIR enabled)" : "");
+        if (girEnabled) {
+            LOGI("  GIR cycle duration: %u frames", config.girCycleDuration);
+        }
         return true;
     }
-    
+
     // Create session parameters with SPS/PPS
     bool createSessionParameters() {
         if (!videoSession) return false;
@@ -1859,16 +2027,29 @@ public:
             if (isIDR && !spsPpsWritten) {
                 writeSpsPps();
             }
-            
+
             LOGD("[Encode] Writing %u bytes at offset %u%s",
                  fb32->bytesWritten, fb32->offset, isIDR ? " (IDR frame)" : "");
-            
+
             const uint8_t* data = static_cast<const uint8_t*>(bitstreamMappedPtr) + fb32->offset;
             writeNALUnit(data, static_cast<size_t>(fb32->bytesWritten));
         }
         
         decodingOrderFrameNum++;
         streamFrameNum++;
+
+        // Update GIR state
+        if (girEnabled) {
+            if (currentFrameIsIDR) {
+                // Reset GIR cycle on IDR
+                girCurrentIndex = 0;
+                LOGD("[GIR] Reset cycle on IDR");
+            } else {
+                // Advance to next position in refresh cycle
+                girCurrentIndex = (girCurrentIndex + 1) % config.girCycleDuration;
+            }
+        }
+
         return result == VK_SUCCESS;
     }
     
@@ -2272,20 +2453,60 @@ private:
         
         vkCmdPipelineBarrier2(cmdBuffer, &dependencyInfo);
         
-        // H.264 slice header info
-        StdVideoEncodeH264SliceHeader sliceHeader = {};
-        sliceHeader.flags.direct_spatial_mv_pred_flag = 0;
-        sliceHeader.flags.num_ref_idx_active_override_flag = 0;
-        sliceHeader.first_mb_in_slice = 0;  // First macroblock
-        sliceHeader.slice_type = isP ? STD_VIDEO_H264_SLICE_TYPE_P : STD_VIDEO_H264_SLICE_TYPE_I;
-        sliceHeader.slice_alpha_c0_offset_div2 = 0;
-        sliceHeader.slice_beta_offset_div2 = 0;
-        sliceHeader.slice_qp_delta = 0;
-        // cabac_init_idc is ignored when entropy_coding_mode_flag is 0 (CAVLC)
-        sliceHeader.cabac_init_idc = STD_VIDEO_H264_CABAC_INIT_IDC_0;
-        sliceHeader.disable_deblocking_filter_idc = STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED;
-        
-        LOGD("[GOP] Slice type: %d(%s-slice)", (int)sliceHeader.slice_type, isP ? "P" : "I");        
+        // Multi-slice support for GIR per-picture partition mode
+        // Normal mode: 1 slice
+        // GIR per-picture partition: naluSliceEntryCount == girCycleDuration
+        uint32_t numSlices = 1;
+        bool useMultiSlice = girEnabled &&
+            (girActiveMode == VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_PER_PICTURE_PARTITION_BIT_KHR);
+        if (useMultiSlice) {
+            numSlices = config.girCycleDuration;
+        }
+
+        // Calculate macroblock distribution for multi-slice
+        uint32_t mbWidth = (config.width + 15) / 16;
+        uint32_t mbHeight = (config.height + 15) / 16;
+        uint32_t totalMBs = mbWidth * mbHeight;
+        uint32_t mbsPerSlice = totalMBs / numSlices;
+        uint32_t remainder = totalMBs % numSlices;
+
+        LOGD("[GOP] Slice config: %u slices, %u MBs each (last: %u), total: %u MBs",
+             numSlices, mbsPerSlice, mbsPerSlice + remainder, totalMBs);
+
+        // Create slice headers
+        // For GIR: slice at girCurrentIndex must be I-type, others can be P-type
+        // For IDR: all slices are I-type
+        // For regular P-frames: all slices are P-type
+        std::vector<StdVideoEncodeH264SliceHeader> sliceHeaders(numSlices);
+        for (uint32_t i = 0; i < numSlices; i++) {
+            sliceHeaders[i] = {};
+            sliceHeaders[i].flags.direct_spatial_mv_pred_flag = 0;
+            sliceHeaders[i].flags.num_ref_idx_active_override_flag = 0;
+            sliceHeaders[i].first_mb_in_slice = i * mbsPerSlice;
+
+            // Determine slice type: GIR refreshes one slice per frame with I-type
+            bool isIntraRefreshSlice = useMultiSlice && !isIDR && (i == girCurrentIndex);
+            if (isIDR) {
+                sliceHeaders[i].slice_type = STD_VIDEO_H264_SLICE_TYPE_I;
+            } else if (isIntraRefreshSlice) {
+                sliceHeaders[i].slice_type = STD_VIDEO_H264_SLICE_TYPE_I;  // GIR: this slice gets refreshed
+            } else if (isP) {
+                sliceHeaders[i].slice_type = STD_VIDEO_H264_SLICE_TYPE_P;
+            } else {
+                sliceHeaders[i].slice_type = STD_VIDEO_H264_SLICE_TYPE_I;
+            }
+
+            sliceHeaders[i].slice_alpha_c0_offset_div2 = 0;
+            sliceHeaders[i].slice_beta_offset_div2 = 0;
+            sliceHeaders[i].slice_qp_delta = 0;
+            sliceHeaders[i].cabac_init_idc = STD_VIDEO_H264_CABAC_INIT_IDC_0;
+            sliceHeaders[i].disable_deblocking_filter_idc = STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED;
+        }
+
+        if (useMultiSlice && !isIDR) {
+            LOGD("[GIR] Slice %u is I-type (intra refresh), others are P-type", girCurrentIndex);
+        }
+        LOGD("[GOP] Slice type: %d(%s-slice), count: %u", (int)sliceHeaders[0].slice_type, isP ? "P" : "I", numSlices);        
         // Build reference lists for P-frames
         StdVideoEncodeH264ReferenceListsInfo refLists = {};
         // Initialize all entries to NO_REFERENCE to satisfy VUID 08339
@@ -2358,20 +2579,23 @@ private:
              (int)stdPicInfo.flags.IdrPicFlag, (int)stdPicInfo.primary_pic_type,
              stdPicInfo.frame_num, stdPicInfo.PicOrderCnt, (stdPicInfo.pRefLists ? "SET" : "NULL"));
         
-        // H.264 NALU slice info
-        VkVideoEncodeH264NaluSliceInfoKHR sliceInfo = {
-            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_NALU_SLICE_INFO_KHR,
-            .pNext = nullptr,
-            .constantQp = config.useVBR ? 0 : static_cast<int32_t>(config.qp),
-            .pStdSliceHeader = &sliceHeader,
-        };
-        
-        // H.264 picture info
+        // H.264 NALU slice infos (one per slice)
+        std::vector<VkVideoEncodeH264NaluSliceInfoKHR> sliceInfos(numSlices);
+        for (uint32_t i = 0; i < numSlices; i++) {
+            sliceInfos[i] = {
+                .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_NALU_SLICE_INFO_KHR,
+                .pNext = nullptr,
+                .constantQp = config.useVBR ? 0 : static_cast<int32_t>(config.qp),
+                .pStdSliceHeader = &sliceHeaders[i],
+            };
+        }
+
+        // H.264 picture info (pNext will be set after girInfo is created)
         VkVideoEncodeH264PictureInfoKHR h264PicInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_PICTURE_INFO_KHR,
             .pNext = nullptr,
-            .naluSliceEntryCount = 1,
-            .pNaluSliceEntries = &sliceInfo,
+            .naluSliceEntryCount = numSlices,
+            .pNaluSliceEntries = sliceInfos.data(),
             .pStdPictureInfo = &stdPicInfo,
             .generatePrefixNalu = VK_FALSE,
         };
@@ -2403,11 +2627,22 @@ private:
             .pNext = nullptr,
             .pStdReferenceInfo = &stdRefInfo,
         };
-        
+
+        // GIR: Track dirty regions for setup (output) slot
+        // After encoding, this slot will have (cycleDuration - currentIndex - 1) dirty regions
+        VkVideoReferenceIntraRefreshInfoKHR setupGirInfo = {};
+        if (girEnabled) {
+            setupGirInfo.sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_INTRA_REFRESH_INFO_KHR;
+            setupGirInfo.pNext = &h264DpbSlotInfo;
+            // For IDR: all regions dirty; For P: depends on GIR index
+            setupGirInfo.dirtyIntraRefreshRegions = isIDR ? config.girCycleDuration
+                                                         : (config.girCycleDuration - girCurrentIndex - 1);
+        }
+
         // Reference slot for setup (output)
         VkVideoReferenceSlotInfoKHR setupSlot = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
-            .pNext = &h264DpbSlotInfo,
+            .pNext = girEnabled ? static_cast<void*>(&setupGirInfo) : static_cast<void*>(&h264DpbSlotInfo),
             .slotIndex = slotIndex,
             .pPictureResource = &dpbPicResource,
         };
@@ -2426,6 +2661,7 @@ private:
         VkVideoPictureResourceInfoKHR refPicResource = {};
         StdVideoEncodeH264ReferenceInfo refStdInfo = {};
         VkVideoEncodeH264DpbSlotInfoKHR refH264DpbSlotInfo = {};
+        VkVideoReferenceIntraRefreshInfoKHR refGirInfo = {};  // GIR dirty tracking for reference
         VkVideoReferenceSlotInfoKHR inputRefSlot = {};
         
         if (isP && lastRefSlotIndex >= 0) {
@@ -2458,23 +2694,47 @@ private:
                 .pNext = nullptr,
                 .pStdReferenceInfo = &refStdInfo,
             };
-            
+
+            // GIR: Track dirty regions in reference picture
+            // For simplicity, assume reference is fully clean (dirtyIntraRefreshRegions = 0)
+            // In a full implementation, this should track the actual dirty region count per DPB slot
+            if (girEnabled) {
+                refGirInfo.sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_INTRA_REFRESH_INFO_KHR;
+                refGirInfo.pNext = &refH264DpbSlotInfo;
+                refGirInfo.dirtyIntraRefreshRegions = dpbDirtyRegions[lastRefSlotIndex];
+                LOGD("[GIR] Reference slot %d has %u dirty regions",
+                     lastRefSlotIndex, refGirInfo.dirtyIntraRefreshRegions);
+            }
+
             // Input reference slot
             inputRefSlot = {
                 .sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
-                .pNext = &refH264DpbSlotInfo,
+                .pNext = girEnabled ? static_cast<void*>(&refGirInfo) : static_cast<void*>(&refH264DpbSlotInfo),
                 .slotIndex = lastRefSlotIndex,
                 .pPictureResource = &refPicResource,
             };
         } else {
             LOGD("[GOP] No input reference (isP=%d, lastRefSlot=%d)", isP, lastRefSlotIndex);
         }
-        
-        // Encode info
+
+        // GIR (Gradual Intra Refresh) info - chains into VkVideoEncodeInfoKHR.pNext
+        // VkVideoEncodeIntraRefreshInfoKHR extends VkVideoEncodeInfoKHR (not H264-specific info)
+        VkVideoEncodeIntraRefreshInfoKHR girInfo = {};
+        bool useGIRThisFrame = girEnabled && !isIDR;
+        if (useGIRThisFrame) {
+            girInfo.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INTRA_REFRESH_INFO_KHR;
+            girInfo.pNext = &h264PicInfo;  // Chain h264PicInfo after girInfo
+            girInfo.intraRefreshCycleDuration = config.girCycleDuration;
+            girInfo.intraRefreshIndex = girCurrentIndex;
+            LOGD("[GIR] Frame %lu: cycle index %u/%u",
+                 (unsigned long)decodingOrderFrameNum, girCurrentIndex, config.girCycleDuration);
+        }
+
+        // Encode info - pNext chains through girInfo (if enabled) to h264PicInfo
         VkVideoEncodeInfoKHR encodeInfo = {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR,
-            .pNext = &h264PicInfo,
-            .flags = 0,
+            .pNext = useGIRThisFrame ? static_cast<void*>(&girInfo) : static_cast<void*>(&h264PicInfo),
+            .flags = useGIRThisFrame ? VK_VIDEO_ENCODE_INTRA_REFRESH_BIT_KHR : static_cast<VkVideoEncodeFlagsKHR>(0),
             .dstBuffer = bitstreamBuffer,
             .dstBufferOffset = 0,
             .dstBufferRange = bitstreamBufferSize,
@@ -2666,6 +2926,18 @@ private:
 
         if (slotIndex >= 0 && slotIndex < MAX_DPB_SLOTS) {
             activeSlotsInSession[slotIndex] = true;
+            // GIR: Track dirty regions for this slot
+            // After encoding with GIR index I, dirty regions = cycleDuration - I - 1
+            // IDR frames reset all regions as dirty
+            if (girEnabled) {
+                if (isIDR) {
+                    dpbDirtyRegions[slotIndex] = config.girCycleDuration;
+                } else {
+                    dpbDirtyRegions[slotIndex] = config.girCycleDuration - girCurrentIndex - 1;
+                }
+                LOGD("[GIR] Slot %d now has %u dirty regions (index was %u)",
+                     slotIndex, dpbDirtyRegions[slotIndex], girCurrentIndex);
+            }
         }
         
         // End query
@@ -2830,6 +3102,10 @@ public:
 	static constexpr uint32_t HEADLESS_FRAME_COUNT = 1000;
 	uint32_t headlessFramesRendered{ 0 };
 
+	// GIR (Gradual Intra Refresh) command line option and feature
+	bool enableGIR{ false };
+	VkPhysicalDeviceVideoEncodeIntraRefreshFeaturesKHR girFeatures{};
+
 	VulkanExample() : VulkanExampleBase(), uniformBuffers{}
 	{
 		title = "Saving framebuffer to screenshot";
@@ -2840,7 +3116,8 @@ public:
 		camera.type = Camera::CameraType::lookat;
 		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 512.0f);
 		camera.setRotation(glm::vec3(-25.0f, 23.75f, 0.0f));
-		camera.setTranslation(glm::vec3(0.0f, 0.0f, -3.0f));
+		camera.setTranslation(glm::vec3(0.0f, 0.0f, -2.0f));
+
 	}
 
 	~VulkanExample() override
@@ -2890,6 +3167,9 @@ public:
 	}
     void getEnabledFeatures() override
 	{
+		// Check for GIR command line option early (before device creation)
+        enableGIR = commandLineParser.isSet("gir");
+
 		// Enable synchronization2 feature for vkCmdPipelineBarrier2
 		// We always add this to the pNext chain - if the extension isn't supported,
 		// getEnabledExtensions() won't add it and device creation will ignore this
@@ -2903,6 +3183,15 @@ public:
 		videoMaintenance1Features.pNext = deviceCreatepNextChain;
 		videoMaintenance1Features.videoMaintenance1 = VK_TRUE;
 		deviceCreatepNextChain = &videoMaintenance1Features;
+
+		// Enable GIR feature if requested (extension availability checked later in getEnabledExtensions)
+		// Note: vulkanDevice is not valid yet at this point, so we can't check extension support here
+		if (enableGIR) {
+			girFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_INTRA_REFRESH_FEATURES_KHR;
+			girFeatures.pNext = deviceCreatepNextChain;
+			girFeatures.videoEncodeIntraRefresh = VK_TRUE;
+			deviceCreatepNextChain = &girFeatures;
+		}
 	}
     void getEnabledExtensions() override
 	{
@@ -2944,6 +3233,11 @@ public:
             // if (av1) {
             //     enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME);
             // }
+
+            // Enable GIR extension if requested
+            if (enableGIR && vulkanDevice->extensionSupported(VK_KHR_VIDEO_ENCODE_INTRA_REFRESH_EXTENSION_NAME)) {
+                enabledDeviceExtensions.push_back(VK_KHR_VIDEO_ENCODE_INTRA_REFRESH_EXTENSION_NAME);
+            }
         }
 	}
 
@@ -3085,7 +3379,7 @@ public:
 			}
 			
 			// Update uniforms (animate camera slightly for visual verification)
-			camera.rotate(glm::vec3(0.01f, 0.0f, 0.0f));
+			camera.rotate(glm::vec3(0.1f, 0.0f, 0.0f));
 			uniformData.projection = camera.matrices.perspective;
 			uniformData.view = camera.matrices.view;
 			uniformData.model = glm::mat4(1.0f);
@@ -3632,15 +3926,28 @@ public:
 			     width, height, alignedWidth, alignedHeight);
 		}
 
+		// Check for GIR command line option (manually check args since option was added after parsing)
+        enableGIR = commandLineParser.isSet("gir");
+
 		// Initialize H264 encoder
 		VulkanH264Encoder::EncoderConfig encoderConfig;
 		encoderConfig.width = alignedWidth;
 		encoderConfig.height = alignedHeight;
-		encoderConfig.gopSize = 60;
+		encoderConfig.gopSize = 1000;
 		encoderConfig.maxFrameRate = 0;  // No frame rate limit in headless mode
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
-		encoderConfig.useVBR = false;  // CQP for headless
+	    encoderConfig.useVBR = false;  // CQP for headless
+	    if (enableGIR) {
+	        // only to show gir refresh cycle we set bitrate to be super low for the resolution 
+	        // in headless mode frames are rendered as fast as possible so vbr makes little sense 
+	        encoderConfig.useVBR = true;  
+	        encoderConfig.averageBitrate = 500*1000;  
+	        encoderConfig.maxBitrate = 500*1000;
+	    }
+
+		encoderConfig.enableGIR = enableGIR;
+		encoderConfig.girCycleDuration = 30;  // 30 slices per picture for GIR
 
 		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
 			LOGE("Failed to initialize H264 encoder");

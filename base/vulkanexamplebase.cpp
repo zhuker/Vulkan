@@ -157,8 +157,9 @@ VkResult VulkanExampleBase::createInstance()
 		if (validationLayerPresent) {
 			instanceCreateInfo.ppEnabledLayerNames = &validationLayerName;
 			instanceCreateInfo.enabledLayerCount = 1;
+			std::cout << "Validation layer VK_LAYER_KHRONOS_validation enabled\n";
 		} else {
-			std::cerr << "Validation layer VK_LAYER_KHRONOS_validation not present, validation is disabled";
+			std::cerr << "Validation layer VK_LAYER_KHRONOS_validation not present, validation is disabled\n";
 		}
 	}
 
@@ -781,6 +782,7 @@ VulkanExampleBase::VulkanExampleBase()
 	commandLineParser.add("benchmarkresultframes", { "-bt", "--benchframetimes" }, 0, "Save frame times to benchmark results file");
 	commandLineParser.add("benchmarkframes", { "-bfs", "--benchmarkframes" }, 1, "Only render the given number of frames");
 	commandLineParser.add("headless", { "-hl", "--headless" }, 0, "Dont render ui");
+	commandLineParser.add("gir", { "--gir" }, 0, "Enable Gradual Intra Refresh for video encoding");
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	commandLineParser.add("resourcepath", { "-rp", "--resourcepath" }, 1, "Set path for dir where assets and shaders folder is present");
 #endif
