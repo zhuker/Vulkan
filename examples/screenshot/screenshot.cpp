@@ -938,6 +938,7 @@ public:
         bool useVBR = false;         // Enable VBR rate control
         uint32_t averageBitrate = 0; // Average bitrate (bits/s)
         uint32_t maxBitrate = 0;     // Max bitrate (bits/s)
+        bool testAdjustBitrate = false; // Test dynamic bitrate adjustment (doubles after frame 400)
         // GIR (Gradual Intra Refresh) configuration
         bool enableGIR = false;              // Enable hardware Gradual Intra Refresh
         uint32_t girCycleDuration = 30;      // Frames to complete full refresh (1-maxIntraRefreshCycleDuration)
@@ -1710,14 +1711,16 @@ public:
     std::pair<uint32_t, uint32_t> getCurrentBitrate() const {
         if (!config.useVBR) return {0, 0};
 
-        if (streamFrameNum < 400) {
-            LOGD("[Bitrate] Frame %lu: Requesting bitrate %u",
-                 (unsigned long)streamFrameNum, config.averageBitrate);
-            return {config.averageBitrate, config.averageBitrate};
+        // Test mode: double bitrate after frame 400
+        if (config.testAdjustBitrate && streamFrameNum >= 400) {
+            LOGD("[Bitrate] Frame %lu: Requesting bitrate %u (test adjust)",
+                 (unsigned long)streamFrameNum, config.averageBitrate * 2);
+            return {config.averageBitrate * 2, config.maxBitrate * 2};
         }
+
         LOGD("[Bitrate] Frame %lu: Requesting bitrate %u",
-             (unsigned long)streamFrameNum, config.averageBitrate * 2);
-        return {config.averageBitrate * 2, config.maxBitrate * 2};
+             (unsigned long)streamFrameNum, config.averageBitrate);
+        return {config.averageBitrate, config.maxBitrate};
     }
     
     // Check if next frame should be IDR
@@ -3945,6 +3948,10 @@ public:
 	        encoderConfig.maxBitrate = bitrateKbps * 1000;
 	        LOGI("VBR enabled via command line, bitrate: %u kbps", bitrateKbps);
 	    }
+	    if (commandLineParser.isSet("test-adjust-bitrate")) {
+	        encoderConfig.testAdjustBitrate = true;
+	        LOGI("Test bitrate adjustment enabled (doubles after frame 400)");
+	    }
 
 		encoderConfig.enableGIR = enableGIR;
 		encoderConfig.girCycleDuration = 30;  // 30 slices per picture for GIR
@@ -4143,6 +4150,10 @@ public:
 	        encoderConfig.averageBitrate = bitrateKbps * 1000;
 	        encoderConfig.maxBitrate = bitrateKbps * 1000;
 	        LOGI("VBR enabled via command line, bitrate: %u kbps", bitrateKbps);
+	    }
+	    if (commandLineParser.isSet("test-adjust-bitrate")) {
+	        encoderConfig.testAdjustBitrate = true;
+	        LOGI("Test bitrate adjustment enabled (doubles after frame 400)");
 	    }
 
 		if (!h264Encoder.initialize(vulkanDevice, instance, encoderConfig)) {
