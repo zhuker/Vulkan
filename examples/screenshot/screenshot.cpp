@@ -929,11 +929,14 @@ class VulkanH264Encoder {
 public:
     // Encoder configuration
     struct EncoderConfig {
+        static constexpr auto kDefaultGopSize = 60;
+
         uint32_t width = 0;
         uint32_t height = 0;
-        uint32_t gopSize = 60;       // GOP size: 60 frames = 1 second at 60fps (I+P frames)
+        uint32_t gopSize = kDefaultGopSize;       // GOP size: 60 frames = 1 second at 60fps (I+P frames)
         uint32_t qp = 23;            // Constant QP for CQP rate control
         uint32_t maxFrameRate = 0;   // Max frame rate limiter (0 = unlimited)
+        uint32_t encoderTimebase = 60;    
         std::string outputPath = "recording.h264";
         bool useVBR = false;         // Enable VBR rate control
         uint32_t averageBitrate = 0; // Average bitrate (bits/s)
@@ -2790,7 +2793,7 @@ private:
             .pNext = &h264RateControlLayer,
             .averageBitrate = avgBitrate,
             .maxBitrate = maxBitrate,
-            .frameRateNumerator = (config.maxFrameRate > 0) ? config.maxFrameRate : 60,
+            .frameRateNumerator = config.encoderTimebase,
             .frameRateDenominator = 1,
         };
 
@@ -3109,6 +3112,13 @@ public:
 	bool enableGIR{ false };
 	VkPhysicalDeviceVideoEncodeIntraRefreshFeaturesKHR girFeatures{};
 
+    static constexpr auto kDefaultBitrateKbps = 4200;
+	// Encoder command line options
+	bool useVBR{ false };
+	uint32_t vbrBitrate{ 4200 };      
+	uint32_t gopSize{VulkanH264Encoder::EncoderConfig::kDefaultGopSize };            
+	bool testAdjustBitrate{ false };
+
 	VulkanExample() : VulkanExampleBase(), uniformBuffers{}
 	{
 		title = "Saving framebuffer to screenshot";
@@ -3121,6 +3131,16 @@ public:
 		camera.setRotation(glm::vec3(-25.0f, 23.75f, 0.0f));
 		camera.setTranslation(glm::vec3(0.0f, 0.0f, -2.0f));
 
+		// Parse encoder options
+		enableGIR = commandLineParser.isSet("gir");
+		useVBR = commandLineParser.isSet("vbr");
+		if (useVBR) {
+			vbrBitrate = commandLineParser.getValueAsInt("vbr", kDefaultBitrateKbps);
+		}
+		if (commandLineParser.isSet("gop")) {
+			gopSize = commandLineParser.getValueAsInt("gop", VulkanH264Encoder::EncoderConfig::kDefaultGopSize);
+		}
+		testAdjustBitrate = commandLineParser.isSet("test-adjust-bitrate");
 	}
 
 	~VulkanExample() override
@@ -3170,8 +3190,7 @@ public:
 	}
     void getEnabledFeatures() override
 	{
-		// Check for GIR command line option early (before device creation)
-        enableGIR = commandLineParser.isSet("gir");
+		// enableGIR is already set in constructor from command line
 
 		// Enable synchronization2 feature for vkCmdPipelineBarrier2
 		// We always add this to the pNext chain - if the extension isn't supported,
@@ -3929,27 +3948,25 @@ public:
 			     width, height, alignedWidth, alignedHeight);
 		}
 
-		// Check for GIR command line option (manually check args since option was added after parsing)
-        enableGIR = commandLineParser.isSet("gir");
-
 		// Initialize H264 encoder
 		VulkanH264Encoder::EncoderConfig encoderConfig;
 		encoderConfig.width = alignedWidth;
 		encoderConfig.height = alignedHeight;
-		encoderConfig.gopSize = 1000;
+		encoderConfig.gopSize = (gopSize > 0) ? gopSize : VulkanH264Encoder::EncoderConfig::kDefaultGopSize; 
 		encoderConfig.maxFrameRate = 0;  // No frame rate limit in headless mode
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
-	    encoderConfig.useVBR = false;  // CQP for headless
-	    if (commandLineParser.isSet("vbr")) {
-	        encoderConfig.useVBR = true;
-	        uint32_t bitrateKbps = commandLineParser.getValueAsInt("vbr", 4200);
-	        encoderConfig.averageBitrate = bitrateKbps * 1000;
-	        encoderConfig.maxBitrate = bitrateKbps * 1000;
-	        LOGI("VBR enabled via command line, bitrate: %u kbps", bitrateKbps);
+	    encoderConfig.useVBR = useVBR;
+	    if (useVBR) {
+	        encoderConfig.averageBitrate = vbrBitrate * 1000;
+	        encoderConfig.maxBitrate = vbrBitrate * 1000;
+	        LOGI("VBR enabled, bitrate: %u kbps", vbrBitrate);
 	    }
-	    if (commandLineParser.isSet("test-adjust-bitrate")) {
-	        encoderConfig.testAdjustBitrate = true;
+	    if (gopSize > 0) {
+	        LOGI("GOP size: %u frames", encoderConfig.gopSize);
+	    }
+	    encoderConfig.testAdjustBitrate = testAdjustBitrate;
+	    if (testAdjustBitrate) {
 	        LOGI("Test bitrate adjustment enabled (doubles after frame 400)");
 	    }
 
@@ -4139,20 +4156,21 @@ public:
 		VulkanH264Encoder::EncoderConfig encoderConfig;
 		encoderConfig.width = alignedWidth;
 		encoderConfig.height = alignedHeight;
-		encoderConfig.gopSize = 360;  // All I-frames
+		encoderConfig.gopSize = (gopSize > 0) ? gopSize : VulkanH264Encoder::EncoderConfig::kDefaultGopSize;
 	    encoderConfig.maxFrameRate = 60;
 		encoderConfig.qp = 23;
 		encoderConfig.outputPath = "recording.h264";
-		
-	    if (commandLineParser.isSet("vbr")) {
-	        encoderConfig.useVBR = true;
-	        uint32_t bitrateKbps = commandLineParser.getValueAsInt("vbr", 4200);
-	        encoderConfig.averageBitrate = bitrateKbps * 1000;
-	        encoderConfig.maxBitrate = bitrateKbps * 1000;
-	        LOGI("VBR enabled via command line, bitrate: %u kbps", bitrateKbps);
+		encoderConfig.useVBR = useVBR;
+	    if (useVBR) {
+	        encoderConfig.averageBitrate = vbrBitrate * 1000;
+	        encoderConfig.maxBitrate = vbrBitrate * 1000;
+	        LOGI("VBR enabled, bitrate: %u kbps", vbrBitrate);
 	    }
-	    if (commandLineParser.isSet("test-adjust-bitrate")) {
-	        encoderConfig.testAdjustBitrate = true;
+	    if (gopSize > 0) {
+	        LOGI("GOP size: %u frames", encoderConfig.gopSize);
+	    }
+	    encoderConfig.testAdjustBitrate = testAdjustBitrate;
+	    if (testAdjustBitrate) {
 	        LOGI("Test bitrate adjustment enabled (doubles after frame 400)");
 	    }
 

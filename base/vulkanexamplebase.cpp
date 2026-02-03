@@ -784,6 +784,9 @@ VulkanExampleBase::VulkanExampleBase()
 	commandLineParser.add("headless", { "-hl", "--headless" }, 0, "Dont render ui");
 	commandLineParser.add("gir", { "--gir" }, 0, "Enable Gradual Intra Refresh for video encoding");
 	commandLineParser.add("vbr", { "--vbr" }, 1, "Enable VBR rate control with bitrate in kbps (e.g. --vbr 5000)");
+    commandLineParser.add("gop", { "--gop" }, 1, "Set GOP size in frames (default: 1000 headless, 360 windowed)");
+    commandLineParser.add("test-adjust-bitrate", { "--test-adjust-bitrate" }, 0, "Test dynamic bitrate adjustment (doubles after frame 400)");
+
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	commandLineParser.add("resourcepath", { "-rp", "--resourcepath" }, 1, "Set path for dir where assets and shaders folder is present");
 #endif
