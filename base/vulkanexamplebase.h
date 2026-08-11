@@ -85,6 +85,7 @@ private:
 	void handleMouseMove(int32_t x, int32_t y);
 	void nextFrame();
 	void renderLoopOffscreen();
+	std::string offscreenFrameFilename(uint32_t frame) const;
 	void updateOverlay();
 	void createPipelineCache();
 	void createCommandPool();
@@ -190,10 +191,15 @@ public:
 	struct OffscreenSettings {
 		/** @brief Number of frames to render before the sample exits */
 		uint32_t frames = 1;
-		/** @brief Name of the file that frames are stored to instead of being presented (defaults to the name of the executable) */
+		/** @brief Name of the file that frames are stored to instead of being presented (defaults to the name of the executable)
+		 *  @note If more than one frame is rendered, the frame index is appended to the base name (e.g. "triangle_0000.ppm") */
 		std::string filename = "";
 		/** @brief Fixed frame time used instead of the measured one, so that rendered frames are reproducible */
 		float frameTime = 1.0f / 60.0f;
+		/** @brief Rotate the camera around the scene while rendering, so samples that don't animate anything also show different images per frame */
+		bool orbit = false;
+		/** @brief Angle in degrees that the camera is rotated by over all rendered frames */
+		float orbitDegrees = 360.0f;
 	} offscreenSettings;
 
 	/** @brief State of gamepad input (only used on Android) */

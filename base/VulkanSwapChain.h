@@ -57,12 +57,12 @@ private:
 	void destroyStagingImage();
 	/* Destroy the image views (and in offscreen mode also the images and their memory) */
 	void destroyImages();
-	/* Empty submission used to signal and/or wait for semaphores that would be handled by the presentation engine */
-	VkResult submitEmpty(VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);
+	/* Empty submission used to signal a semaphore that the presentation engine would signal */
+	VkResult submitEmpty(VkSemaphore signalSemaphore);
 	/* Get the index of a memory type that matches the given requirements */
 	uint32_t getMemoryTypeIndex(uint32_t typeBits, VkMemoryPropertyFlags properties);
 	/* Store the contents of one of the images to a ppm file, used instead of presenting in offscreen mode */
-	void saveImage(uint32_t imageIndex);
+	VkResult saveImage(uint32_t imageIndex, VkSemaphore waitSemaphore);
 public:
 	VkFormat colorFormat{};
 	VkColorSpaceKHR colorSpace{};

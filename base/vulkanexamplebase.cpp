@@ -322,11 +322,36 @@ void VulkanExampleBase::nextFrame()
 	tPrevEnd = tEnd;
 }
 
+/**
+* Returns the name of the file that the given frame is stored to in offscreen mode
+*
+* A single frame is stored with the requested file name as-is, for multiple frames the zero padded frame index is appended to the base name
+*/
+std::string VulkanExampleBase::offscreenFrameFilename(uint32_t frame) const
+{
+	if (offscreenSettings.frames == 1) {
+		return offscreenSettings.filename;
+	}
+	// Only a dot after the last path separator starts the file extension, so we don't split names like "./frames/image"
+	const size_t separatorPos = offscreenSettings.filename.find_last_of("/\\");
+	size_t extensionPos = offscreenSettings.filename.find_last_of('.');
+	if ((extensionPos != std::string::npos) && (separatorPos != std::string::npos) && (extensionPos < separatorPos)) {
+		extensionPos = std::string::npos;
+	}
+	const std::string baseName = offscreenSettings.filename.substr(0, extensionPos);
+	const std::string extension = (extensionPos == std::string::npos) ? "" : offscreenSettings.filename.substr(extensionPos);
+	char frameIndex[16];
+	snprintf(frameIndex, sizeof(frameIndex), "_%04u", frame);
+	return baseName + frameIndex + extension;
+}
+
 void VulkanExampleBase::renderLoopOffscreen()
 {
 	// Offscreen rendering has no window and as such no events to handle, we render a fixed number of frames
-	// Instead of presenting them, the swapchain stores each frame to disk, so the file contains the last frame once we're done
+	// Instead of presenting them, the swapchain stores each frame to disk
 	for (uint32_t i = 0; i < offscreenSettings.frames; i++) {
+		// Every frame is stored to a file of it's own, so the swapchain gets the name for the frame we're about to render
+		swapChain.offscreenFilename = offscreenFrameFilename(i);
 		// A fixed frame time is used instead of the measured one, so that animations always advance by the same amount and the rendered images are reproducible
 		frameTimer = offscreenSettings.frameTime;
 		camera.update(frameTimer);
@@ -338,9 +363,21 @@ void VulkanExampleBase::renderLoopOffscreen()
 		}
 		render();
 		frameCounter++;
+		// Many samples only change their image in reaction to user input, which offscreen rendering has none of
+		// Rotating the camera around the scene makes those samples produce a different image for every frame too
+		// Note: This orbits the scene for the lookat camera used by most samples, samples with a first person camera instead look around from their fixed position
+		if (offscreenSettings.orbit) {
+			camera.rotate(glm::vec3(0.0f, offscreenSettings.orbitDegrees / (float)offscreenSettings.frames, 0.0f));
+		}
 	}
+	// The image has already been stored to disk at this point, but samples may still have work in flight on other queues (e.g. a dedicated compute queue)
+	// So just like at the end of the windowed render loop we flush the device to make sure all resources can be freed
 	vkDeviceWaitIdle(device);
-	std::cout << "Rendered " << offscreenSettings.frames << " frame(s) to \"" << offscreenSettings.filename << "\"\n";
+	if (offscreenSettings.frames == 1) {
+		std::cout << "Rendered one frame to \"" << offscreenFrameFilename(0) << "\"\n";
+	} else {
+		std::cout << "Rendered " << offscreenSettings.frames << " frames to \"" << offscreenFrameFilename(0) << "\" - \"" << offscreenFrameFilename(offscreenSettings.frames - 1) << "\"\n";
+	}
 }
 
 void VulkanExampleBase::renderLoop()
@@ -815,9 +852,10 @@ VulkanExampleBase::VulkanExampleBase()
 	commandLineParser.add("benchmarkresultfile", { "-bf", "--benchfilename" }, 1, "Set file name for benchmark results");
 	commandLineParser.add("benchmarkresultframes", { "-bt", "--benchframetimes" }, 0, "Save frame times to benchmark results file");
 	commandLineParser.add("benchmarkframes", { "-bfs", "--benchmarkframes" }, 1, "Only render the given number of frames");
-	commandLineParser.add("offscreen", { "-o", "--offscreen" }, 0, "Render without a window and store the last frame to a file");
+	commandLineParser.add("offscreen", { "-o", "--offscreen" }, 0, "Render without a window and store the rendered frame(s) to file(s)");
 	commandLineParser.add("offscreenframes", { "-of", "--offscreenframes" }, 1, "Set the number of frames to render in offscreen mode");
 	commandLineParser.add("offscreenfile", { "-ofn", "--offscreenfilename" }, 1, "Set the file name for the frame stored in offscreen mode");
+	commandLineParser.add("offscreenorbit", { "-oo", "--offscreenorbit" }, 0, "Rotate the camera once around the scene while rendering in offscreen mode");
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	commandLineParser.add("resourcepath", { "-rp", "--resourcepath" }, 1, "Set path for dir where assets and shaders folder is present");
 #endif
@@ -885,6 +923,9 @@ VulkanExampleBase::VulkanExampleBase()
 	}
 	if (commandLineParser.isSet("offscreenfile")) {
 		offscreenSettings.filename = commandLineParser.getValueAsString("offscreenfile", offscreenSettings.filename);
+	}
+	if (commandLineParser.isSet("offscreenorbit")) {
+		offscreenSettings.orbit = true;
 	}
 	if (settings.offscreen) {
 		// Without an explicitly requested file name, the frames are stored next to the executable using the name of the sample

@@ -389,8 +389,11 @@ uint32_t VulkanSwapChain::getMemoryTypeIndex(uint32_t typeBits, VkMemoryProperty
 * Stores one of the images to a ppm file
 *
 * This is what "presenting" does in offscreen mode: instead of handing the image to a presentation engine that displays it, we write it to disk
+*
+* @param imageIndex Index of the image to store
+* @param waitSemaphore Semaphore that the copy waits for, so we don't read an image that is still being rendered to
 */
-void VulkanSwapChain::saveImage(uint32_t imageIndex)
+VkResult VulkanSwapChain::saveImage(uint32_t imageIndex, VkSemaphore waitSemaphore)
 {
 	const VkImage srcImage = images[imageIndex];
 	const uint32_t width = imageExtent.width;
@@ -451,12 +454,22 @@ void VulkanSwapChain::saveImage(uint32_t imageIndex)
 
 	VK_CHECK_RESULT(vkEndCommandBuffer(copyCmd));
 
+	// Waiting for the semaphore that presentation would wait for makes sure that we don't copy an image that is still being rendered to
+	// It also puts the semaphore back into the unsignaled state, so the sample can signal it again for the next frame
+	const VkPipelineStageFlags waitStage{ VK_PIPELINE_STAGE_TRANSFER_BIT };
 	VkSubmitInfo submitInfo{
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.waitSemaphoreCount = (waitSemaphore != VK_NULL_HANDLE) ? 1u : 0u,
+		.pWaitSemaphores = &waitSemaphore,
+		.pWaitDstStageMask = &waitStage,
 		.commandBufferCount = 1,
 		.pCommandBuffers = &copyCmd
 	};
-	VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+	const VkResult result = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+	if (result != VK_SUCCESS) {
+		vkFreeCommandBuffers(device, commandPool, 1, &copyCmd);
+		return result;
+	}
 	// The copy has to be finished before we can read the image on the host
 	VK_CHECK_RESULT(vkQueueWaitIdle(queue));
 	vkFreeCommandBuffers(device, commandPool, 1, &copyCmd);
@@ -464,7 +477,7 @@ void VulkanSwapChain::saveImage(uint32_t imageIndex)
 	std::ofstream file(offscreenFilename, std::ios::out | std::ios::binary);
 	if (!file.is_open()) {
 		std::cerr << "Could not open \"" << offscreenFilename << "\" for storing the rendered image\n";
-		return;
+		return VK_SUCCESS;
 	}
 
 	// ppm header
@@ -501,21 +514,19 @@ void VulkanSwapChain::saveImage(uint32_t imageIndex)
 		data += stagingImageLayout.rowPitch;
 	}
 	file.close();
+
+	return VK_SUCCESS;
 }
 
 /**
-* Empty submission used to emulate the semaphore signal and wait operations of the presentation engine in offscreen mode
+* Empty submission used to signal the semaphore that the presentation engine would signal once an image has been acquired
 *
 * This way samples can use the same synchronization for offscreen rendering as they do when rendering to a window
 */
-VkResult VulkanSwapChain::submitEmpty(VkSemaphore waitSemaphore, VkSemaphore signalSemaphore)
+VkResult VulkanSwapChain::submitEmpty(VkSemaphore signalSemaphore)
 {
-	const VkPipelineStageFlags waitStage{ VK_PIPELINE_STAGE_ALL_COMMANDS_BIT };
 	VkSubmitInfo submitInfo{
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		.waitSemaphoreCount = (waitSemaphore != VK_NULL_HANDLE) ? 1u : 0u,
-		.pWaitSemaphores = &waitSemaphore,
-		.pWaitDstStageMask = &waitStage,
 		.signalSemaphoreCount = (signalSemaphore != VK_NULL_HANDLE) ? 1u : 0u,
 		.pSignalSemaphores = &signalSemaphore
 	};
@@ -683,7 +694,7 @@ VkResult VulkanSwapChain::acquireNextImage(VkSemaphore presentCompleteSemaphore,
 	if (offscreen) {
 		imageIndex = nextImageIndex;
 		nextImageIndex = (nextImageIndex + 1) % imageCount;
-		return submitEmpty(VK_NULL_HANDLE, presentCompleteSemaphore);
+		return submitEmpty(presentCompleteSemaphore);
 	}
 	// By setting timeout to UINT64_MAX we will always wait until the next image has been acquired or an actual error is thrown
 	// With that we don't have to handle VK_NOT_READY
@@ -693,14 +704,9 @@ VkResult VulkanSwapChain::acquireNextImage(VkSemaphore presentCompleteSemaphore,
 VkResult VulkanSwapChain::queuePresent(VkSemaphore waitSemaphore, uint32_t imageIndex)
 {
 	// In offscreen mode there is no presentation engine that could display the image, so we store it to disk instead
-	// The empty submission takes the place of the semaphore wait that the presentation engine would do
+	// The copy takes the place of the presentation, including the wait for the semaphore that the presentation engine would have waited for
 	if (offscreen) {
-		const VkResult result = submitEmpty(waitSemaphore, VK_NULL_HANDLE);
-		if (result != VK_SUCCESS) {
-			return result;
-		}
-		saveImage(imageIndex);
-		return VK_SUCCESS;
+		return saveImage(imageIndex, waitSemaphore);
 	}
 	VkPresentInfoKHR presentInfo{
 		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,

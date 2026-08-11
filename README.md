@@ -81,9 +81,10 @@ Once built, examples can be run from the bin directory. The list of available co
  -bf, --benchfilename: Set file name for benchmark results
  -bt, --benchframetimes: Save frame times to benchmark results file
  -bfs, --benchmarkframes: Only render the given number of frames
- -o, --offscreen: Render without a window and store the last frame to a file
+ -o, --offscreen: Render without a window and store the rendered frame(s) to file(s)
  -of, --offscreenframes: Set the number of frames to render in offscreen mode
  -ofn, --offscreenfilename: Set the file name for the frame stored in offscreen mode
+ -oo, --offscreenorbit: Rotate the camera once around the scene while rendering in offscreen mode
  -rp, --resourcepath: Set path for dir where assets and shaders folder is present
 ```
 Note that some examples require specific device features, and if you are on a multi-gpu system you might need to use the `-gl` and `-g` to select a gpu that supports them.
@@ -94,9 +95,15 @@ All examples can be run without a window using the `--offscreen` command line op
 ```
 ./triangle --offscreen --offscreenframes 60 --offscreenfilename triangle.ppm
 ```
-The sample exits after rendering the requested number of frames (one by default), so the file contains the last rendered frame. This is e.g. useful for running the samples in a CI setup or on a machine without a display.
+The sample exits after rendering the requested number of frames (one by default). A single frame is stored using the given file name as-is, for multiple frames the frame index is appended to the base name, so the above stores `triangle_0000.ppm` to `triangle_0059.ppm`. This is e.g. useful for running the samples in a CI setup or on a machine without a display.
 
 Running a sample with the same command line twice always produces the same image: animations advance by a fixed frame time, the UI overlay is disabled (it displays values like the current frame rate that change between runs) and samples that randomize their contents use a fixed seed, just like in benchmark mode.
+
+Many samples only change their image in reaction to mouse or keyboard input, which offscreen rendering has none of, so rendering multiple frames of them would just store the same image over and over. Adding `--offscreenorbit` rotates the camera around the scene over the rendered frames, so those samples show their scene from different angles:
+```
+./pbrbasic --offscreen --offscreenframes 36 --offscreenorbit
+```
+The camera is rotated by a full turn spread across all frames, with the first frame using the view that the sample starts with. Samples that use a first person camera (instead of the look-at camera used by most of them) look around from their fixed position rather than orbiting the scene.
 
 The `renderheadless` and `computeheadless` samples always run without a window and as such don't use this option.
 
