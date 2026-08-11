@@ -65,8 +65,7 @@ public:
 	void setupSpheres()
 	{
 		// Setup random colors and fixed positions for every sphere in the scene
-		std::random_device rndDevice;
-		std::default_random_engine rndEngine(benchmark.active ? 0 : rndDevice());
+		std::default_random_engine rndEngine(getRandomSeed());
 		std::uniform_real_distribution<float> rndDist(0.1f, 1.0f);
 		for (uint32_t i = 0; i < spheres.size(); i++) {
 			spheres[i].color = glm::vec4(rndDist(rndEngine), rndDist(rndEngine), rndDist(rndEngine), 1.0f);

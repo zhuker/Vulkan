@@ -324,7 +324,7 @@ public:
 		std::vector<InstanceData> instanceData;
 		instanceData.resize(objectCount);
 
-		std::default_random_engine rndEngine(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndEngine(getRandomSeed());
 		std::uniform_real_distribution<float> uniformDist(0.0f, 1.0f);
 
 		for (uint32_t i = 0; i < objectCount; i++) {

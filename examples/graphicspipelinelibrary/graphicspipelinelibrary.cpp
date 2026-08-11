@@ -323,7 +323,7 @@ public:
 		};
 
 		// Select lighting model using a specialization constant
-		srand(benchmark.active ? 0 : ((unsigned int)time(NULL)));
+		srand(getRandomSeed());
 		uint32_t lighting_model = (int)(rand() % 4);
 
 		// Each shader constant of a shader stage corresponds to one map entry

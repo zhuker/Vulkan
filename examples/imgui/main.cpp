@@ -64,6 +64,10 @@ public:
 		// Set ImGui font and style scale factors to handle retina and other HiDPI displays
 		ImGuiIO& io = ImGui::GetIO();
 		io.FontGlobalScale = example->ui.scale;
+		// ImGui stores the window layout in a file that is loaded at startup, which would make offscreen rendering depend on the results of former runs
+		if (example->settings.offscreen) {
+			io.IniFilename = nullptr;
+		}
 		ImGuiStyle& style = ImGui::GetStyle();
 		style.ScaleAllSizes(example->ui.scale);
 	};

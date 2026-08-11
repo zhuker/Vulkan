@@ -759,15 +759,20 @@ public:
 		vkWaitForFences(device, 1, &waitFences[currentFrame], VK_TRUE, UINT64_MAX);
 		VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[currentFrame]));
 
-		// Get the next swap chain image from the implementation
-		// Note that the implementation is free to return the images in any order, so we must use the acquire function and can't just cycle through the images/imageIndex on our own
 		uint32_t imageIndex{ 0 };
-		VkResult result = vkAcquireNextImageKHR(device, swapChain.swapChain, UINT64_MAX, presentCompleteSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-			windowResize();
-			return;
-		} else if ((result != VK_SUCCESS) && (result != VK_SUBOPTIMAL_KHR)) {
-			throw "Could not acquire the next swap chain image!";
+		if (settings.offscreen) {
+			// Offscreen rendering has no swap chain, so we get one of the images created by the base class instead
+			VK_CHECK_RESULT(swapChain.acquireNextImage(presentCompleteSemaphores[currentFrame], imageIndex));
+		} else {
+			// Get the next swap chain image from the implementation
+			// Note that the implementation is free to return the images in any order, so we must use the acquire function and can't just cycle through the images/imageIndex on our own
+			VkResult result = vkAcquireNextImageKHR(device, swapChain.swapChain, UINT64_MAX, presentCompleteSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+			if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+				windowResize();
+				return;
+			} else if ((result != VK_SUCCESS) && (result != VK_SUBOPTIMAL_KHR)) {
+				throw "Could not acquire the next swap chain image!";
+			}
 		}
 
 		// Update the uniform buffer for the next frame
@@ -873,22 +878,27 @@ public:
 		// Submit to the graphics queue passing a wait fence
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[currentFrame]));
 
-		// Present the current frame buffer to the swap chain
-		// Pass the semaphore signaled by the command buffer submission from the submit info as the wait semaphore for swap chain presentation
-		// This ensures that the image is not presented to the windowing system until all commands have been submitted
-		VkPresentInfoKHR presentInfo{
-			.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-			.waitSemaphoreCount = 1,
-			.pWaitSemaphores = &renderCompleteSemaphores[imageIndex],
-			.swapchainCount = 1,
-			.pSwapchains = &swapChain.swapChain,
-			.pImageIndices = &imageIndex
-		};
-		result = vkQueuePresentKHR(queue, &presentInfo);
-		if ((result == VK_ERROR_OUT_OF_DATE_KHR) || (result == VK_SUBOPTIMAL_KHR)) {
-			windowResize();
-		} else if (result != VK_SUCCESS) {
-			throw "Could not present the image to the swap chain!";
+		if (settings.offscreen) {
+			// Offscreen rendering has nothing to present to, so the image is stored to disk instead of being displayed
+			VK_CHECK_RESULT(swapChain.queuePresent(renderCompleteSemaphores[imageIndex], imageIndex));
+		} else {
+			// Present the current frame buffer to the swap chain
+			// Pass the semaphore signaled by the command buffer submission from the submit info as the wait semaphore for swap chain presentation
+			// This ensures that the image is not presented to the windowing system until all commands have been submitted
+			VkPresentInfoKHR presentInfo{
+				.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+				.waitSemaphoreCount = 1,
+				.pWaitSemaphores = &renderCompleteSemaphores[imageIndex],
+				.swapchainCount = 1,
+				.pSwapchains = &swapChain.swapChain,
+				.pImageIndices = &imageIndex
+			};
+			VkResult result = vkQueuePresentKHR(queue, &presentInfo);
+			if ((result == VK_ERROR_OUT_OF_DATE_KHR) || (result == VK_SUBOPTIMAL_KHR)) {
+				windowResize();
+			} else if (result != VK_SUCCESS) {
+				throw "Could not present the image to the swap chain!";
+			}
 		}
 
 		// Select the next frame to render to, based on the max. no. of concurrent frames
@@ -971,7 +981,10 @@ int main(const int argc, const char *argv[])
 	for (size_t i = 0; i < argc; i++) { VulkanExample::args.push_back(argv[i]); };
 	vulkanExample = new VulkanExample();
 	vulkanExample->initVulkan();
-	vulkanExample->setupWindow();
+	// Offscreen rendering doesn't display anything, so no window is created
+	if (!vulkanExample->settings.offscreen) {
+		vulkanExample->setupWindow();
+	}
 	vulkanExample->prepare();
 	vulkanExample->renderLoop();
 	delete(vulkanExample);
@@ -984,7 +997,10 @@ int main(const int argc, const char *argv[])
 	for (size_t i = 0; i < argc; i++) { VulkanExample::args.push_back(argv[i]); };
 	vulkanExample = new VulkanExample();
 	vulkanExample->initVulkan();
-	vulkanExample->setupWindow();
+	// Offscreen rendering doesn't display anything, so no window is created
+	if (!vulkanExample->settings.offscreen) {
+		vulkanExample->setupWindow();
+	}
 	vulkanExample->prepare();
 	vulkanExample->renderLoop();
 	delete(vulkanExample);
@@ -1012,7 +1028,10 @@ int main(const int argc, const char *argv[])
 	for (size_t i = 0; i < argc; i++) { VulkanExample::args.push_back(argv[i]); };
 	vulkanExample = new VulkanExample();
 	vulkanExample->initVulkan();
-	vulkanExample->setupWindow();
+	// Offscreen rendering doesn't display anything, so no window is created
+	if (!vulkanExample->settings.offscreen) {
+		vulkanExample->setupWindow();
+	}
 	vulkanExample->prepare();
 	vulkanExample->renderLoop();
 	delete(vulkanExample);

@@ -81,9 +81,24 @@ Once built, examples can be run from the bin directory. The list of available co
  -bf, --benchfilename: Set file name for benchmark results
  -bt, --benchframetimes: Save frame times to benchmark results file
  -bfs, --benchmarkframes: Only render the given number of frames
+ -o, --offscreen: Render without a window and store the last frame to a file
+ -of, --offscreenframes: Set the number of frames to render in offscreen mode
+ -ofn, --offscreenfilename: Set the file name for the frame stored in offscreen mode
  -rp, --resourcepath: Set path for dir where assets and shaders folder is present
 ```
 Note that some examples require specific device features, and if you are on a multi-gpu system you might need to use the `-gl` and `-g` to select a gpu that supports them.
+
+### Offscreen rendering
+
+All examples can be run without a window using the `--offscreen` command line option. Instead of creating a surface and a swapchain, the framework then creates the images that a swapchain would provide, and rendered images are stored to a ppm file instead of being presented:
+```
+./triangle --offscreen --offscreenframes 60 --offscreenfilename triangle.ppm
+```
+The sample exits after rendering the requested number of frames (one by default), so the file contains the last rendered frame. This is e.g. useful for running the samples in a CI setup or on a machine without a display.
+
+Running a sample with the same command line twice always produces the same image: animations advance by a fixed frame time, the UI overlay is disabled (it displays values like the current frame rate that change between runs) and samples that randomize their contents use a fixed seed, just like in benchmark mode.
+
+The `renderheadless` and `computeheadless` samples always run without a window and as such don't use this option.
 
 ## Shaders
 

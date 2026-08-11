@@ -114,7 +114,7 @@ public:
 	// Setup and fill the compute shader storage buffers containing the particles
 	void prepareStorageBuffers()
 	{
-		std::default_random_engine rndEngine(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndEngine(getRandomSeed());
 		std::uniform_real_distribution<float> rndDist(-1.0f, 1.0f);
 
 		// Initial particle positions

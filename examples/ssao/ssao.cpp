@@ -701,7 +701,7 @@ public:
 	void prepareBuffers()
 	{
 		// Set up SSAO sample kernel
-		std::default_random_engine rndEngine(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndEngine(getRandomSeed());
 		std::uniform_real_distribution<float> rndDist(0.0f, 1.0f);
 		std::vector<glm::vec4> ssaoKernel(SSAO_KERNEL_SIZE);
 		for (uint32_t i = 0; i < SSAO_KERNEL_SIZE; ++i) {

@@ -89,7 +89,7 @@ public:
 
 		// A buffer with randpmly generatd sphere descriptions (center, radius, material) that'll be passed to the ray tracing shaders as a shader storage buffer object
 		std::vector<Sphere> spheres{};
-		std::default_random_engine rndGenerator(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndGenerator(getRandomSeed());
 		std::uniform_real_distribution<float> uniformDist(0.0, 1.0);
 		std::uniform_real_distribution<float> sizeDist(1.0, 2.0);
 		for (uint32_t i = 0; i < 1024; i++) {

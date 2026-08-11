@@ -105,7 +105,7 @@ public:
 
 		// Setup random materials for every object in the scene
 		for (uint32_t i = 0; i < objects.size(); i++) {
-			objects[i].setRandomMaterial(!benchmark.active);
+			objects[i].setRandomMaterial(!requiresFixedSeed());
 		}
 	}
 
@@ -368,7 +368,7 @@ public:
 		if (overlay->button("Randomize")) {
 			// Randomize material properties
 			for (uint32_t i = 0; i < objects.size(); i++) {
-				objects[i].setRandomMaterial(!benchmark.active);
+				objects[i].setRandomMaterial(!requiresFixedSeed());
 			}
 		}
 	}

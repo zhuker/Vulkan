@@ -84,6 +84,7 @@ private:
 	bool resizing = false;
 	void handleMouseMove(int32_t x, int32_t y);
 	void nextFrame();
+	void renderLoopOffscreen();
 	void updateOverlay();
 	void createPipelineCache();
 	void createCommandPool();
@@ -181,7 +182,19 @@ public:
 		bool vsync = false;
 		/** @brief Enable UI overlay */
 		bool overlay = true;
+		/** @brief Render without a window, storing frames to disk instead of presenting them */
+		bool offscreen = false;
 	} settings;
+
+	/** @brief Offscreen mode settings that can be changed e.g. by command line arguments */
+	struct OffscreenSettings {
+		/** @brief Number of frames to render before the sample exits */
+		uint32_t frames = 1;
+		/** @brief Name of the file that frames are stored to instead of being presented (defaults to the name of the executable) */
+		std::string filename = "";
+		/** @brief Fixed frame time used instead of the measured one, so that rendered frames are reproducible */
+		float frameTime = 1.0f / 60.0f;
+	} offscreenSettings;
 
 	/** @brief State of gamepad input (only used on Android) */
 	struct {
@@ -376,6 +389,11 @@ public:
 
 	/** @brief Loads a SPIR-V shader file for the given shader stage */
 	VkPipelineShaderStageCreateInfo loadShader(std::string fileName, VkShaderStageFlagBits stage);
+
+	/** @brief Returns true if the sample has to produce the same output on every run, which is the case for benchmarking and offscreen rendering */
+	bool requiresFixedSeed() const;
+	/** @brief Returns the seed that samples use for their random number generators, fixed if the output has to be reproducible (see requiresFixedSeed) */
+	uint32_t getRandomSeed() const;
 
 	void windowResize();
 

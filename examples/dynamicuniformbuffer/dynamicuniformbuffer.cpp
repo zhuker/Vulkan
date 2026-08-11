@@ -281,7 +281,7 @@ public:
 		}
 
 		// Prepare per-object matrices with offsets and random rotations
-		std::default_random_engine rndEngine(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndEngine(getRandomSeed());
 		std::normal_distribution<float> rndDist(-1.0f, 1.0f);
 		for (uint32_t i = 0; i < OBJECT_INSTANCES; i++) {
 			rotations[i] = glm::vec3(rndDist(rndEngine), rndDist(rndEngine), rndDist(rndEngine)) * 2.0f * (float)M_PI;

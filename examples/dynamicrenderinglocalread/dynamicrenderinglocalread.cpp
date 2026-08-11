@@ -430,8 +430,7 @@ public:
 			glm::vec3(0.0f, 0.0f, 1.0f),
 			glm::vec3(1.0f, 1.0f, 0.0f),
 		};
-		std::random_device rndDevice;
-		std::default_random_engine rndGen(benchmark.active ? 0 : rndDevice());
+		std::default_random_engine rndGen(getRandomSeed());
 		std::uniform_real_distribution<float> rndDist(-1.0f, 1.0f);
 		std::uniform_real_distribution<float> rndCol(0.0f, 0.5f);
 		for (auto& light : lights) {

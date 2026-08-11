@@ -111,7 +111,7 @@ public:
 		camera.setRotation(glm::vec3(-15.0f, 45.0f, 0.0f));
 		camera.setPerspective(60.0f, (float)width / (float)height, 1.0f, 256.0f);
 		timerSpeed *= 8.0f;
-		rndEngine.seed(benchmark.active ? 0 : (unsigned)time(nullptr));
+		rndEngine.seed(getRandomSeed());
 	}
 
 	~VulkanExample()

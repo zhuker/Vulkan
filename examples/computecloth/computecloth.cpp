@@ -546,7 +546,7 @@ public:
 			compute.uniformData.deltaT = fmin(frameTimer, 0.02f) * 0.0025f;
 
 			if (simulateWind) {
-				std::default_random_engine rndEngine(benchmark.active ? 0 : (unsigned)time(nullptr));
+				std::default_random_engine rndEngine(getRandomSeed());
 				std::uniform_real_distribution<float> rd(1.0f, 12.0f);
 				compute.uniformData.gravity.x = cos(glm::radians(-timer * 360.0f)) * (rd(rndEngine) - rd(rndEngine));
 				compute.uniformData.gravity.z = sin(glm::radians(timer * 360.0f)) * (rd(rndEngine) - rd(rndEngine));

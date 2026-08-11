@@ -92,8 +92,7 @@ public:
 	{
 		textures.resize(32);
 		for (size_t i = 0; i < textures.size(); i++) {
-			std::random_device rndDevice;
-			std::default_random_engine rndEngine(benchmark.active ? 0 : rndDevice());
+			std::default_random_engine rndEngine(getRandomSeed());
 			std::uniform_int_distribution<> rndDist(50, UCHAR_MAX);
 			const int32_t dim = 3;
 			const size_t bufferSize = dim * dim * 4;
@@ -115,8 +114,7 @@ public:
 		std::vector<uint32_t> indices;
 
 		// Generate random per-face texture indices
-		std::random_device rndDevice;
-		std::default_random_engine rndEngine(benchmark.active ? 0 : rndDevice());
+		std::default_random_engine rndEngine(getRandomSeed());
 		std::uniform_int_distribution<int32_t> rndDist(0, static_cast<uint32_t>(textures.size()) - 1);
 
 		// Generate cubes with random per-face texture indices

@@ -108,7 +108,8 @@ int main(const int argc, const char *argv[])													    \
 	for (size_t i = 0; i < argc; i++) { VulkanExample::args.push_back(argv[i]); };  				\
 	vulkanExample = new VulkanExample();															\
 	vulkanExample->initVulkan();																	\
-	vulkanExample->setupWindow();					 												\
+	/* Offscreen rendering doesn't display anything, so no window is created */						\
+	if (!vulkanExample->settings.offscreen) { vulkanExample->setupWindow(); }						\
 	vulkanExample->prepare();																		\
 	vulkanExample->renderLoop();																	\
 	delete(vulkanExample);																			\
@@ -133,7 +134,8 @@ int main(const int argc, const char *argv[])													    \
 	for (size_t i = 0; i < argc; i++) { VulkanExample::args.push_back(argv[i]); };  				\
 	vulkanExample = new VulkanExample();															\
 	vulkanExample->initVulkan();																	\
-	vulkanExample->setupWindow();					 												\
+	/* Offscreen rendering doesn't display anything, so no window is created */						\
+	if (!vulkanExample->settings.offscreen) { vulkanExample->setupWindow(); }						\
 	vulkanExample->prepare();																		\
 	vulkanExample->renderLoop();																	\
 	delete(vulkanExample);																			\

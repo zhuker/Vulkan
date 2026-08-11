@@ -187,11 +187,339 @@ void VulkanSwapChain::initSurface(screen_context_t screen_context, screen_window
 	colorSpace = selectedFormat.colorSpace;
 }
 
-void VulkanSwapChain::setContext(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device)
+void VulkanSwapChain::setContext(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue queue)
 {
 	this->instance = instance;
 	this->physicalDevice = physicalDevice;
 	this->device = device;
+	this->queue = queue;
+}
+
+/**
+* Selects the queue family and the color format used for offscreen rendering
+*
+* Offscreen rendering has no window and no presentation engine (and as such no surface), so this replaces initSurface for that case
+*/
+void VulkanSwapChain::initOffscreen()
+{
+	// Without a surface there are no supported surface formats to select from, so we use a format that's commonly used for presentation instead
+	colorFormat = VK_FORMAT_B8G8R8A8_UNORM;
+	colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+
+	// Same as above, without a surface there is no presentation support to check for, so we select the first queue family that supports graphics
+	uint32_t queueCount;
+	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount, nullptr);
+	assert(queueCount >= 1);
+	std::vector<VkQueueFamilyProperties> queueProps(queueCount);
+	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount, queueProps.data());
+	queueNodeIndex = UINT32_MAX;
+	for (uint32_t i = 0; i < queueCount; i++) {
+		if ((queueProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+			queueNodeIndex = i;
+			break;
+		}
+	}
+	if (queueNodeIndex == UINT32_MAX) {
+		vks::tools::exitFatal("Could not find a graphics queue!", -1);
+	}
+}
+
+/**
+* Creates the images that are usually owned by the swapchain
+*
+* Used for offscreen rendering, where no window and no presentation engine (and as such no surface and no swapchain) is available.
+* Everything that samples use from the swapchain (images, image views, format) stays the same, so they don't need to be aware of this.
+*/
+void VulkanSwapChain::createOffscreen(uint32_t width, uint32_t height)
+{
+	// Free the images of a former offscreen swapchain (e.g. on resize)
+	destroyImages();
+
+	imageExtent = { width, height };
+
+	// The images are stored to disk instead of being presented, which requires a command buffer to copy them with
+	if (commandPool == VK_NULL_HANDLE) {
+		VkCommandPoolCreateInfo commandPoolCI{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = queueNodeIndex
+		};
+		VK_CHECK_RESULT(vkCreateCommandPool(device, &commandPoolCI, nullptr, &commandPool));
+	}
+
+	// We use the image count that a swapchain would commonly provide, so samples behave the same as when rendering to a window
+	imageCount = 3;
+	images.resize(imageCount);
+	imageViews.resize(imageCount);
+	imageMemory.resize(imageCount);
+
+	for (uint32_t i = 0; i < imageCount; i++) {
+		// Usage flags match those that are enabled for the images of a swapchain, so samples can e.g. copy into or from them
+		VkImageCreateInfo imageCI{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = colorFormat,
+			.extent = { width, height, 1 },
+			.mipLevels = 1,
+			.arrayLayers = 1,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+		};
+		VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &images[i]));
+
+		VkMemoryRequirements memReqs;
+		vkGetImageMemoryRequirements(device, images[i], &memReqs);
+		VkMemoryAllocateInfo memAllocInfo{
+			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.allocationSize = memReqs.size,
+			.memoryTypeIndex = getMemoryTypeIndex(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+		};
+		VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &imageMemory[i]));
+		VK_CHECK_RESULT(vkBindImageMemory(device, images[i], imageMemory[i], 0));
+
+		VkImageViewCreateInfo colorAttachmentView{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = images[i],
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = colorFormat,
+			.components = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A },
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1
+			},
+		};
+		VK_CHECK_RESULT(vkCreateImageView(device, &colorAttachmentView, nullptr, &imageViews[i]));
+	}
+
+	createStagingImage();
+
+	nextImageIndex = 0;
+}
+
+/**
+* Creates the host visible image that images are copied into before they are stored to disk
+*
+* This is done once and not per image, as in offscreen mode every rendered frame is stored to disk
+*/
+void VulkanSwapChain::createStagingImage()
+{
+	// Blitting also does the format conversion for us (e.g. from BGR to RGB), so we check if it's supported for the images we copy between
+	supportsBlit = true;
+	VkFormatProperties formatProps;
+	// Check if the device supports blitting from optimal tiled images (the images we render to are optimal tiled)
+	vkGetPhysicalDeviceFormatProperties(physicalDevice, colorFormat, &formatProps);
+	if (!(formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+		supportsBlit = false;
+	}
+	// Check if the device supports blitting to linear tiled images
+	vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8G8B8A8_UNORM, &formatProps);
+	if (!(formatProps.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+		supportsBlit = false;
+	}
+
+	destroyStagingImage();
+
+	// The image is linear tiled and backed by host visible memory, so we can map it and read the pixels from it
+	VkImageCreateInfo imageCI{
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_R8G8B8A8_UNORM,
+		.extent = { imageExtent.width, imageExtent.height, 1 },
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_LINEAR,
+		.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+	};
+	VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &stagingImage));
+
+	VkMemoryRequirements memReqs;
+	vkGetImageMemoryRequirements(device, stagingImage, &memReqs);
+	VkMemoryAllocateInfo memAllocInfo{
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = memReqs.size,
+		.memoryTypeIndex = getMemoryTypeIndex(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	};
+	VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &stagingImageMemory));
+	VK_CHECK_RESULT(vkBindImageMemory(device, stagingImage, stagingImageMemory, 0));
+
+	// Get the layout of the image (including the row pitch), as the implementation may add padding to the rows
+	const VkImageSubresource subResource{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0 };
+	vkGetImageSubresourceLayout(device, stagingImage, &subResource, &stagingImageLayout);
+
+	// The image stays mapped for as long as it exists
+	VK_CHECK_RESULT(vkMapMemory(device, stagingImageMemory, 0, VK_WHOLE_SIZE, 0, (void**)&stagingImageData));
+}
+
+void VulkanSwapChain::destroyStagingImage()
+{
+	if (stagingImage == VK_NULL_HANDLE) {
+		return;
+	}
+	vkUnmapMemory(device, stagingImageMemory);
+	vkFreeMemory(device, stagingImageMemory, nullptr);
+	vkDestroyImage(device, stagingImage, nullptr);
+	stagingImageData = nullptr;
+	stagingImageMemory = VK_NULL_HANDLE;
+	stagingImage = VK_NULL_HANDLE;
+}
+
+uint32_t VulkanSwapChain::getMemoryTypeIndex(uint32_t typeBits, VkMemoryPropertyFlags properties)
+{
+	VkPhysicalDeviceMemoryProperties memoryProperties;
+	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+	for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++) {
+		if ((typeBits & (1 << i)) && ((memoryProperties.memoryTypes[i].propertyFlags & properties) == properties)) {
+			return i;
+		}
+	}
+	vks::tools::exitFatal("Could not find a matching memory type!", -1);
+	return 0;
+}
+
+/**
+* Stores one of the images to a ppm file
+*
+* This is what "presenting" does in offscreen mode: instead of handing the image to a presentation engine that displays it, we write it to disk
+*/
+void VulkanSwapChain::saveImage(uint32_t imageIndex)
+{
+	const VkImage srcImage = images[imageIndex];
+	const uint32_t width = imageExtent.width;
+	const uint32_t height = imageExtent.height;
+
+	// Copy the image that would have been presented into our host visible image
+	VkCommandBufferAllocateInfo cmdBufAllocateInfo{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = commandPool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1
+	};
+	VkCommandBuffer copyCmd;
+	VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocateInfo, &copyCmd));
+	VkCommandBufferBeginInfo cmdBufBeginInfo{ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	VK_CHECK_RESULT(vkBeginCommandBuffer(copyCmd, &cmdBufBeginInfo));
+
+	const VkImageSubresourceRange subresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+	// Transition the host visible image to transfer destination layout, we don't care about it's former contents as we overwrite all of it
+	vks::tools::insertImageMemoryBarrier(copyCmd, stagingImage, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, subresourceRange);
+
+	// Transition the image from the layout it has been left in for presentation to transfer source layout
+	vks::tools::insertImageMemoryBarrier(copyCmd, srcImage, VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, subresourceRange);
+
+	if (supportsBlit) {
+		const VkOffset3D blitSize{ (int32_t)width, (int32_t)height, 1 };
+		VkImageBlit imageBlitRegion{
+			.srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+			.srcOffsets = { {}, blitSize },
+			.dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+			.dstOffsets = { {}, blitSize }
+		};
+		vkCmdBlitImage(copyCmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &imageBlitRegion, VK_FILTER_NEAREST);
+	} else {
+		// Without blit support we do an image copy, which requires us to manually swizzle the color components later on
+		VkImageCopy imageCopyRegion{
+			.srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+			.dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+			.extent = { width, height, 1 }
+		};
+		vkCmdCopyImage(copyCmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &imageCopyRegion);
+	}
+
+	// Transition the host visible image to general layout, which is the required layout for reading from mapped image memory
+	vks::tools::insertImageMemoryBarrier(copyCmd, stagingImage, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, subresourceRange);
+
+	// Transition back the image, so it can be rendered to again once it's acquired the next time
+	vks::tools::insertImageMemoryBarrier(copyCmd, srcImage, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, subresourceRange);
+
+	VK_CHECK_RESULT(vkEndCommandBuffer(copyCmd));
+
+	VkSubmitInfo submitInfo{
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &copyCmd
+	};
+	VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+	// The copy has to be finished before we can read the image on the host
+	VK_CHECK_RESULT(vkQueueWaitIdle(queue));
+	vkFreeCommandBuffers(device, commandPool, 1, &copyCmd);
+
+	std::ofstream file(offscreenFilename, std::ios::out | std::ios::binary);
+	if (!file.is_open()) {
+		std::cerr << "Could not open \"" << offscreenFilename << "\" for storing the rendered image\n";
+		return;
+	}
+
+	// ppm header
+	file << "P6\n" << width << "\n" << height << "\n" << 255 << "\n";
+
+	// If the source is BGR (the destination is always RGB) and we couldn't use a blit (which does the conversion for us), we have to manually swizzle the color components
+	bool colorSwizzle = false;
+	if (!supportsBlit) {
+		// Note: Not complete, only contains the most common BGR formats
+		const std::vector<VkFormat> formatsBGR = { VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SNORM };
+		colorSwizzle = (std::find(formatsBGR.begin(), formatsBGR.end(), colorFormat) != formatsBGR.end());
+	}
+
+	// ppm binary pixel data
+	// The rows are copied as a whole before dropping the alpha component, as reading from the mapped image memory one component at a time is slow
+	const char* data = stagingImageData + stagingImageLayout.offset;
+	std::vector<uint32_t> pixels(width);
+	std::vector<char> row(width * 3);
+	for (uint32_t y = 0; y < height; y++) {
+		memcpy(pixels.data(), data, width * sizeof(uint32_t));
+		for (uint32_t x = 0; x < width; x++) {
+			const char* pixel = (const char*)&pixels[x];
+			if (colorSwizzle) {
+				row[x * 3 + 0] = pixel[2];
+				row[x * 3 + 1] = pixel[1];
+				row[x * 3 + 2] = pixel[0];
+			} else {
+				row[x * 3 + 0] = pixel[0];
+				row[x * 3 + 1] = pixel[1];
+				row[x * 3 + 2] = pixel[2];
+			}
+		}
+		file.write(row.data(), row.size());
+		data += stagingImageLayout.rowPitch;
+	}
+	file.close();
+}
+
+/**
+* Empty submission used to emulate the semaphore signal and wait operations of the presentation engine in offscreen mode
+*
+* This way samples can use the same synchronization for offscreen rendering as they do when rendering to a window
+*/
+VkResult VulkanSwapChain::submitEmpty(VkSemaphore waitSemaphore, VkSemaphore signalSemaphore)
+{
+	const VkPipelineStageFlags waitStage{ VK_PIPELINE_STAGE_ALL_COMMANDS_BIT };
+	VkSubmitInfo submitInfo{
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.waitSemaphoreCount = (waitSemaphore != VK_NULL_HANDLE) ? 1u : 0u,
+		.pWaitSemaphores = &waitSemaphore,
+		.pWaitDstStageMask = &waitStage,
+		.signalSemaphoreCount = (signalSemaphore != VK_NULL_HANDLE) ? 1u : 0u,
+		.pSignalSemaphores = &signalSemaphore
+	};
+	return vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
 }
 
 void VulkanSwapChain::create(uint32_t& width, uint32_t& height, bool vsync, bool fullscreen)
@@ -199,6 +527,12 @@ void VulkanSwapChain::create(uint32_t& width, uint32_t& height, bool vsync, bool
 	assert(physicalDevice);
 	assert(device);
 	assert(instance);
+
+	// In offscreen mode there is no surface to create a swapchain for, so we create the images it would provide ourselves
+	if (offscreen) {
+		createOffscreen(width, height);
+		return;
+	}
 
 	// Store the current swap chain handle so we can use it later on to ease up recreation
 	VkSwapchainKHR oldSwapchain = swapChain;
@@ -312,10 +646,8 @@ void VulkanSwapChain::create(uint32_t& width, uint32_t& height, bool vsync, bool
 	VK_CHECK_RESULT(vkCreateSwapchainKHR(device, &swapchainCI, nullptr, &swapChain));
 
 	// If an existing swap chain is re-created, destroy the old swap chain and the ressources owned by the application (image views, images are owned by the swap chain)
-	if (oldSwapchain != VK_NULL_HANDLE) { 
-		for (auto i = 0; i < images.size(); i++) {
-			vkDestroyImageView(device, imageViews[i], nullptr);
-		}
+	if (oldSwapchain != VK_NULL_HANDLE) {
+		destroyImages();
 		vkDestroySwapchainKHR(device, oldSwapchain, nullptr);
 	}
 	// Get the (new) swap chain images
@@ -347,16 +679,68 @@ void VulkanSwapChain::create(uint32_t& width, uint32_t& height, bool vsync, bool
 
 VkResult VulkanSwapChain::acquireNextImage(VkSemaphore presentCompleteSemaphore, uint32_t& imageIndex)
 {
+	// In offscreen mode there is no presentation engine that could hand us an image, so we cycle through the images ourselves
+	if (offscreen) {
+		imageIndex = nextImageIndex;
+		nextImageIndex = (nextImageIndex + 1) % imageCount;
+		return submitEmpty(VK_NULL_HANDLE, presentCompleteSemaphore);
+	}
 	// By setting timeout to UINT64_MAX we will always wait until the next image has been acquired or an actual error is thrown
 	// With that we don't have to handle VK_NOT_READY
 	return vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, presentCompleteSemaphore, (VkFence)nullptr, &imageIndex);
 }
+
+VkResult VulkanSwapChain::queuePresent(VkSemaphore waitSemaphore, uint32_t imageIndex)
+{
+	// In offscreen mode there is no presentation engine that could display the image, so we store it to disk instead
+	// The empty submission takes the place of the semaphore wait that the presentation engine would do
+	if (offscreen) {
+		const VkResult result = submitEmpty(waitSemaphore, VK_NULL_HANDLE);
+		if (result != VK_SUCCESS) {
+			return result;
+		}
+		saveImage(imageIndex);
+		return VK_SUCCESS;
+	}
+	VkPresentInfoKHR presentInfo{
+		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+		.waitSemaphoreCount = 1,
+		.pWaitSemaphores = &waitSemaphore,
+		.swapchainCount = 1,
+		.pSwapchains = &swapChain,
+		.pImageIndices = &imageIndex
+	};
+	return vkQueuePresentKHR(queue, &presentInfo);
+}
+
+void VulkanSwapChain::destroyImages()
+{
+	for (size_t i = 0; i < images.size(); i++) {
+		vkDestroyImageView(device, imageViews[i], nullptr);
+		// Unlike the images of a swapchain, the images used for offscreen rendering are owned by us and have to be freed
+		if (offscreen) {
+			vkDestroyImage(device, images[i], nullptr);
+			vkFreeMemory(device, imageMemory[i], nullptr);
+		}
+	}
+	images.clear();
+	imageViews.clear();
+	imageMemory.clear();
+}
+
 void VulkanSwapChain::cleanup()
 {
-	if (swapChain != VK_NULL_HANDLE) {
-		for (auto i = 0; i < images.size(); i++) {
-			vkDestroyImageView(device, imageViews[i], nullptr);
+	if (offscreen) {
+		destroyImages();
+		destroyStagingImage();
+		if (commandPool != VK_NULL_HANDLE) {
+			vkDestroyCommandPool(device, commandPool, nullptr);
+			commandPool = VK_NULL_HANDLE;
 		}
+		return;
+	}
+	if (swapChain != VK_NULL_HANDLE) {
+		destroyImages();
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 	if (surface != VK_NULL_HANDLE) {

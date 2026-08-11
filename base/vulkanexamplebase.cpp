@@ -25,32 +25,36 @@ std::vector<const char*> VulkanExampleBase::args;
 
 VkResult VulkanExampleBase::createInstance()
 {
+	// Note: Even for offscreen rendering we enable the surface and swapchain extensions, as the samples use image layouts (like VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) that require them
 	std::vector<const char*> instanceExtensions = { VK_KHR_SURFACE_EXTENSION_NAME };
 
-	// Enable surface extensions depending on os
+	// Offscreen rendering doesn't create a window, so the platform specific extensions for creating a surface for it are not required
+	if (!settings.offscreen) {
+		// Enable surface extensions depending on os
 #if defined(_WIN32)
-	instanceExtensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_ANDROID_KHR)
-	instanceExtensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 #elif defined(_DIRECT2DISPLAY)
-	instanceExtensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_DIRECTFB_EXT)
-	instanceExtensions.push_back(VK_EXT_DIRECTFB_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_EXT_DIRECTFB_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	instanceExtensions.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
-	instanceExtensions.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_IOS_MVK)
-	instanceExtensions.push_back(VK_MVK_IOS_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_MVK_IOS_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_MACOS_MVK)
-	instanceExtensions.push_back(VK_MVK_MACOS_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_MVK_MACOS_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
-	instanceExtensions.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_HEADLESS_EXT)
-	instanceExtensions.push_back(VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME);
 #elif defined(VK_USE_PLATFORM_SCREEN_QNX)
-	instanceExtensions.push_back(VK_QNX_SCREEN_SURFACE_EXTENSION_NAME);
+		instanceExtensions.push_back(VK_QNX_SCREEN_SURFACE_EXTENSION_NAME);
 #endif
+	}
 
 	// Get extensions supported by the instance and store for later use
 	uint32_t extCount = 0;
@@ -234,7 +238,8 @@ void VulkanExampleBase::prepare()
 	setupRenderPass();
 	createPipelineCache();
 	setupFrameBuffer();
-	settings.overlay = settings.overlay && (!benchmark.active);
+	// The overlay displays values that change from frame to frame (like the fps), so it's disabled for offscreen rendering to get reproducible images
+	settings.overlay = settings.overlay && (!benchmark.active) && (!settings.offscreen);
 	if (settings.overlay) {
 		ui.maxConcurrentFrames = maxConcurrentFrames;
 		ui.device = vulkanDevice;
@@ -265,6 +270,17 @@ VkPipelineShaderStageCreateInfo VulkanExampleBase::loadShader(std::string fileNa
 	assert(shaderStage.module != VK_NULL_HANDLE);
 	shaderModules.push_back(shaderStage.module);
 	return shaderStage;
+}
+
+bool VulkanExampleBase::requiresFixedSeed() const
+{
+	// Benchmarking and offscreen rendering have to render the same images on every run, so samples must not randomize their contents in those modes
+	return benchmark.active || settings.offscreen;
+}
+
+uint32_t VulkanExampleBase::getRandomSeed() const
+{
+	return requiresFixedSeed() ? 0 : std::random_device{}();
 }
 
 void VulkanExampleBase::nextFrame()
@@ -306,8 +322,33 @@ void VulkanExampleBase::nextFrame()
 	tPrevEnd = tEnd;
 }
 
+void VulkanExampleBase::renderLoopOffscreen()
+{
+	// Offscreen rendering has no window and as such no events to handle, we render a fixed number of frames
+	// Instead of presenting them, the swapchain stores each frame to disk, so the file contains the last frame once we're done
+	for (uint32_t i = 0; i < offscreenSettings.frames; i++) {
+		// A fixed frame time is used instead of the measured one, so that animations always advance by the same amount and the rendered images are reproducible
+		frameTimer = offscreenSettings.frameTime;
+		camera.update(frameTimer);
+		if (!paused) {
+			timer += timerSpeed * frameTimer;
+			if (timer > 1.0f) {
+				timer -= 1.0f;
+			}
+		}
+		render();
+		frameCounter++;
+	}
+	vkDeviceWaitIdle(device);
+	std::cout << "Rendered " << offscreenSettings.frames << " frame(s) to \"" << offscreenSettings.filename << "\"\n";
+}
+
 void VulkanExampleBase::renderLoop()
 {
+	if (settings.offscreen) {
+		renderLoopOffscreen();
+		return;
+	}
 // SRS - for non-apple plaforms, handle benchmarking here within VulkanExampleBase::renderLoop()
 //     - for macOS, handle benchmarking within NSApp rendering loop via displayLinkOutputCb()
 #if !(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT))
@@ -740,15 +781,7 @@ void VulkanExampleBase::submitFrame(bool skipQueueSubmit)
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[currentBuffer]));
 	}
 
-	VkPresentInfoKHR presentInfo{
-		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-		.waitSemaphoreCount = 1,
-		.pWaitSemaphores = &renderCompleteSemaphores[currentImageIndex],
-		.swapchainCount = 1,
-		.pSwapchains = &swapChain.swapChain,
-		.pImageIndices = &currentImageIndex
-	};
-	VkResult result = vkQueuePresentKHR(queue, &presentInfo);
+	VkResult result = swapChain.queuePresent(renderCompleteSemaphores[currentImageIndex], currentImageIndex);
 	// Recreate the swapchain if it's no longer compatible with the surface (OUT_OF_DATE) or no longer optimal for presentation (SUBOPTIMAL)
 	if ((result == VK_ERROR_OUT_OF_DATE_KHR) || (result == VK_SUBOPTIMAL_KHR)) {
 		windowResize();
@@ -782,6 +815,9 @@ VulkanExampleBase::VulkanExampleBase()
 	commandLineParser.add("benchmarkresultfile", { "-bf", "--benchfilename" }, 1, "Set file name for benchmark results");
 	commandLineParser.add("benchmarkresultframes", { "-bt", "--benchframetimes" }, 0, "Save frame times to benchmark results file");
 	commandLineParser.add("benchmarkframes", { "-bfs", "--benchmarkframes" }, 1, "Only render the given number of frames");
+	commandLineParser.add("offscreen", { "-o", "--offscreen" }, 0, "Render without a window and store the last frame to a file");
+	commandLineParser.add("offscreenframes", { "-of", "--offscreenframes" }, 1, "Set the number of frames to render in offscreen mode");
+	commandLineParser.add("offscreenfile", { "-ofn", "--offscreenfilename" }, 1, "Set the file name for the frame stored in offscreen mode");
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	commandLineParser.add("resourcepath", { "-rp", "--resourcepath" }, 1, "Set path for dir where assets and shaders folder is present");
 #endif
@@ -839,6 +875,24 @@ VulkanExampleBase::VulkanExampleBase()
 	}
 	if (commandLineParser.isSet("benchmarkframes")) {
 		benchmark.outputFrames = commandLineParser.getValueAsInt("benchmarkframes", benchmark.outputFrames);
+	}
+	if (commandLineParser.isSet("offscreen")) {
+		settings.offscreen = true;
+		swapChain.offscreen = true;
+	}
+	if (commandLineParser.isSet("offscreenframes")) {
+		offscreenSettings.frames = std::max(1, commandLineParser.getValueAsInt("offscreenframes", offscreenSettings.frames));
+	}
+	if (commandLineParser.isSet("offscreenfile")) {
+		offscreenSettings.filename = commandLineParser.getValueAsString("offscreenfile", offscreenSettings.filename);
+	}
+	if (settings.offscreen) {
+		// Without an explicitly requested file name, the frames are stored next to the executable using the name of the sample
+		if (offscreenSettings.filename.empty()) {
+			offscreenSettings.filename = (args.empty() ? "offscreen" : std::string(args[0])) + ".ppm";
+		}
+		// In offscreen mode the swapchain stores images to this file instead of presenting them
+		swapChain.offscreenFilename = offscreenSettings.filename;
 	}
 #if (!(defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)))
 	if(commandLineParser.isSet("resourcepath")) {
@@ -906,9 +960,14 @@ VulkanExampleBase::VulkanExampleBase()
 #elif defined(_DIRECT2DISPLAY)
 
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	initWaylandConnection();
+	// Offscreen rendering doesn't require a window, so we also don't need to connect to the windowing system
+	if (!settings.offscreen) {
+		initWaylandConnection();
+	}
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
-	initxcbConnection();
+	if (!settings.offscreen) {
+		initxcbConnection();
+	}
 #endif
 
 #if defined(_WIN32)
@@ -974,22 +1033,27 @@ VulkanExampleBase::~VulkanExampleBase()
 	if (dfb)
 		dfb->Release(dfb);
 #elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	xdg_toplevel_destroy(xdg_toplevel);
-	xdg_surface_destroy(xdg_surface);
-	wl_surface_destroy(surface);
-	if (keyboard)
-		wl_keyboard_destroy(keyboard);
-	if (pointer)
-		wl_pointer_destroy(pointer);
-	if (seat)
-		wl_seat_destroy(seat);
-	xdg_wm_base_destroy(shell);
-	wl_compositor_destroy(compositor);
-	wl_registry_destroy(registry);
-	wl_display_disconnect(display);
+	// In offscreen mode no window and no connection to the windowing system has been created
+	if (!settings.offscreen) {
+		xdg_toplevel_destroy(xdg_toplevel);
+		xdg_surface_destroy(xdg_surface);
+		wl_surface_destroy(surface);
+		if (keyboard)
+			wl_keyboard_destroy(keyboard);
+		if (pointer)
+			wl_pointer_destroy(pointer);
+		if (seat)
+			wl_seat_destroy(seat);
+		xdg_wm_base_destroy(shell);
+		wl_compositor_destroy(compositor);
+		wl_registry_destroy(registry);
+		wl_display_disconnect(display);
+	}
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
-	xcb_destroy_window(connection, window);
-	xcb_disconnect(connection);
+	if (!settings.offscreen) {
+		xcb_destroy_window(connection, window);
+		xcb_disconnect(connection);
+	}
 #elif defined(VK_USE_PLATFORM_SCREEN_QNX)
 	screen_destroy_event(screen_event);
 	screen_destroy_window(screen_window);
@@ -1108,7 +1172,7 @@ bool VulkanExampleBase::initVulkan()
 	}
 	assert(validFormat);
 
-	swapChain.setContext(instance, physicalDevice, device);
+	swapChain.setContext(instance, physicalDevice, device, queue);
 
 	return true;
 }
@@ -3280,6 +3344,11 @@ void VulkanExampleBase::windowResized() {}
 
 void VulkanExampleBase::createSurface()
 {
+	// Offscreen rendering doesn't present to a window, so instead of a surface we only set up what the swapchain would get from it
+	if (settings.offscreen) {
+		swapChain.initOffscreen();
+		return;
+	}
 #if defined(_WIN32)
 	swapChain.initSurface(windowInstance, window);
 #elif defined(VK_USE_PLATFORM_ANDROID_KHR)

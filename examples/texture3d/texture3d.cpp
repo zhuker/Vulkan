@@ -165,7 +165,7 @@ public:
 		camera.setPosition(glm::vec3(0.0f, 0.0f, -2.5f));
 		camera.setRotation(glm::vec3(0.0f, 15.0f, 0.0f));
 		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
-		srand(benchmark.active ? 0 : (unsigned int)time(NULL));
+		srand(getRandomSeed());
 	}
 
 	~VulkanExample()
@@ -288,7 +288,7 @@ public:
 
 		auto tStart = std::chrono::high_resolution_clock::now();
 
-		PerlinNoise<float> perlinNoise(!benchmark.active);
+		PerlinNoise<float> perlinNoise(!requiresFixedSeed());
 		FractalNoise<float> fractalNoise(perlinNoise);
 
 		const float noiseScale = static_cast<float>(rand() % 10) + 4.0f;

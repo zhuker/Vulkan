@@ -262,7 +262,7 @@ public:
 		std::vector<InstanceData> instanceData;
 		instanceData.resize(INSTANCE_COUNT);
 
-		std::default_random_engine rndGenerator(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndGenerator(getRandomSeed());
 		std::uniform_real_distribution<float> uniformDist(0.0, 1.0);
 		std::uniform_int_distribution<uint32_t> rndTextureIndex(0, textures.rocks.layerCount);
 

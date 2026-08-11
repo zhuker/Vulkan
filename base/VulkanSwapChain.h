@@ -33,7 +33,36 @@ private:
 	VkInstance instance{ VK_NULL_HANDLE };
 	VkDevice device{ VK_NULL_HANDLE };
 	VkPhysicalDevice physicalDevice{ VK_NULL_HANDLE };
+	VkQueue queue{ VK_NULL_HANDLE };
 	VkSurfaceKHR surface{ VK_NULL_HANDLE };
+	// Offscreen mode only: memory backing the images that would otherwise be owned by the swapchain
+	std::vector<VkDeviceMemory> imageMemory{};
+	// Offscreen mode only: dimensions of the images and command pool used for storing them to disk
+	VkExtent2D imageExtent{};
+	VkCommandPool commandPool{ VK_NULL_HANDLE };
+	// Offscreen mode only: host visible image that the images are copied into before they are stored to disk
+	VkImage stagingImage{ VK_NULL_HANDLE };
+	VkDeviceMemory stagingImageMemory{ VK_NULL_HANDLE };
+	VkSubresourceLayout stagingImageLayout{};
+	const char* stagingImageData{ nullptr };
+	// Offscreen mode only: set if the images can be blitted (which also converts them to the format stored to disk)
+	bool supportsBlit{ false };
+	// Offscreen mode only: index of the image returned by the next call to acquireNextImage
+	uint32_t nextImageIndex{ 0 };
+	/* Create the images usually owned by the swapchain ourselves, used if no presentation engine is available */
+	void createOffscreen(uint32_t width, uint32_t height);
+	/* Create the host visible image that images are copied into for storing them to disk */
+	void createStagingImage();
+	/* Destroy the host visible image used for storing images to disk */
+	void destroyStagingImage();
+	/* Destroy the image views (and in offscreen mode also the images and their memory) */
+	void destroyImages();
+	/* Empty submission used to signal and/or wait for semaphores that would be handled by the presentation engine */
+	VkResult submitEmpty(VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);
+	/* Get the index of a memory type that matches the given requirements */
+	uint32_t getMemoryTypeIndex(uint32_t typeBits, VkMemoryPropertyFlags properties);
+	/* Store the contents of one of the images to a ppm file, used instead of presenting in offscreen mode */
+	void saveImage(uint32_t imageIndex);
 public:
 	VkFormat colorFormat{};
 	VkColorSpaceKHR colorSpace{};
@@ -42,6 +71,10 @@ public:
 	std::vector<VkImageView> imageViews{};
 	uint32_t queueNodeIndex{ UINT32_MAX };
 	uint32_t imageCount{ 0 };
+	/** @brief Render without a window and a presentation engine, must be set before creating the swapchain */
+	bool offscreen{ false };
+	/** @brief Name of the file that images are stored to instead of being presented in offscreen mode */
+	std::string offscreenFilename{ "offscreen.ppm" };
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 	void initSurface(void* platformHandle, void* platformWindow);
@@ -65,8 +98,10 @@ public:
 #elif defined(VK_USE_PLATFORM_SCREEN_QNX)
 	void initSurface(screen_context_t screen_context, screen_window_t screen_window);
 #endif
+	/* Select the queue family and color format for offscreen rendering, replaces initSurface if no presentation engine is available */
+	void initOffscreen();
 	/* Set the Vulkan objects required for swapchain creation and management, must be called before swapchain creation */
-	void setContext(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device);
+	void setContext(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue queue = VK_NULL_HANDLE);
 	/**
 	* Create the swapchain and get its images with given width and height
 	* 
@@ -86,6 +121,15 @@ public:
 	* @return VkResult of the image acquisition
 	*/
 	VkResult acquireNextImage(VkSemaphore presentCompleteSemaphore, uint32_t& imageIndex);
+	/**
+	* Queues an image for presentation
+	*
+	* @param waitSemaphore Semaphore that is waited on before the image is presented
+	* @param imageIndex Index of the swapchain image to present
+	*
+	* @return VkResult of the presentation
+	*/
+	VkResult queuePresent(VkSemaphore waitSemaphore, uint32_t imageIndex);
 	/* Free all Vulkan resources acquired by the swapchain */
 	void cleanup();
 };

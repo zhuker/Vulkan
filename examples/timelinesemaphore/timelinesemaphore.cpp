@@ -151,7 +151,7 @@ public:
 		// Initial particle positions
 		std::vector<Particle> particleBuffer(numParticles);
 
-		std::default_random_engine rndEngine(benchmark.active ? 0 : (unsigned)time(nullptr));
+		std::default_random_engine rndEngine(getRandomSeed());
 		std::normal_distribution<float> rndDist(0.0f, 1.0f);
 
 		for (uint32_t i = 0; i < static_cast<uint32_t>(attractors.size()); i++) {

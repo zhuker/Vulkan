@@ -644,8 +644,7 @@ void VulkanExample::render()
 // Fills a buffer with random colors
 void VulkanExample::randomPattern(uint8_t* buffer, uint32_t width, uint32_t height)
 {
-	std::random_device rd;
-	std::mt19937 rndEngine(rd());
+	std::mt19937 rndEngine(getRandomSeed());
 	std::uniform_int_distribution<uint32_t> rndDist(0, 255);
 	uint8_t rndVal[4] = { 0, 0, 0, 0 };
 	while (rndVal[0] + rndVal[1] + rndVal[2] < 10) {
@@ -698,7 +697,7 @@ void VulkanExample::fillRandomPages()
 {
 	vkDeviceWaitIdle(device);
 
-	std::default_random_engine rndEngine(benchmark.active ? 0 : std::random_device{}());
+	std::default_random_engine rndEngine(getRandomSeed());
 	std::uniform_real_distribution<float> rndDist(0.0f, 1.0f);
 
 	std::vector<VirtualTexturePage> updatedPages;
@@ -768,8 +767,7 @@ void VulkanExample::fillMipTail()
 		imageBuffer.map();
 
 		// Fill buffer with random colors
-		std::random_device rd;
-		std::mt19937 rndEngine(rd());
+		std::mt19937 rndEngine(getRandomSeed());
 		std::uniform_int_distribution<uint32_t> rndDist(0, 255);
 		uint8_t* data = (uint8_t*)imageBuffer.mapped;
 		randomPattern(data, width, height);
@@ -794,7 +792,7 @@ void VulkanExample::flushRandomPages()
 {
 	vkDeviceWaitIdle(device);
 
-	std::default_random_engine rndEngine(benchmark.active ? 0 : std::random_device{}());
+	std::default_random_engine rndEngine(getRandomSeed());
 	std::uniform_real_distribution<float> rndDist(0.0f, 1.0f);
 
 	std::vector<VirtualTexturePage> updatedPages;
